@@ -1,0 +1,6 @@
+/sshmgr
+*.bak.*
+
+# Local-only working files
+/.codex
+/docs/
