@@ -363,7 +363,10 @@ hosts:
 | `pinned` | bool | float this host to the top of the TUI host list |
 | `commands` | list | one-shot commands; runs them and exits instead of opening a shell |
 | `become` | map | `{method: sudo\|su, user: name}` — runs commands wrapped in sudo/su |
-| `login_steps` | list | post-login chain (see below) |
+| `login_steps` | list | post-login chain (see below); inheritable from a group |
+| `login_steps_none` | bool | opt this host out of a group-inherited `login_steps` chain |
+| `login_steps_auto` | bool | run `login_steps` at connect (default true); set false to use the `~r` hotkey instead |
+| `escalate_key` | string | escape character for the in-session escalation hotkey (default `~`) |
 | `x11_forward` | bool | request X11 forwarding so remote GUI apps render locally |
 | `forward_agent` | bool | forward local ssh-agent into the session |
 | `persistent` | string | wraps the remote shell in `tmux` (or `screen`) named `sshmgr-<alias>` so it survives disconnects |
@@ -500,6 +503,58 @@ the `expect` substring in the output, then sends the resolved password.
 Each step's password resolves through the same backends as the host
 password — same `{{alias}}`/`{{host}}`/`{{user}}`/`{{port}}` placeholders
 and the same process-wide cache.
+
+**Group-level chains.** `login_steps` can live on a group, so a whole fleet
+shares one escalation chain. A host inherits the group's `login_steps` unless
+it defines its own (host-level wins, full replacement — steps are not merged).
+To opt a single host out entirely, set `login_steps_none: true` on it (a bare
+`login_steps: []` would be dropped on the next config save and silently
+re-inherit, so use the explicit flag).
+
+**Auto at connect vs. on-demand hotkey.** By default the chain runs automatically
+right after the shell opens. On hosts gated by an interactive MFA prompt (DUO,
+Okta, OTP) that races the prompt — the chain would type `su` into the MFA prompt
+before you approve it. Set **`login_steps_auto: false`** (host or group) so the
+chain does *not* fire at connect; instead you trigger it yourself once you can see
+the shell prompt, with the in-session escalation hotkey:
+
+- **`~r`** — at the start of a line (OpenSSH-style `~` escape), runs the host's
+  `login_steps` against the live session and lands you as root in place. `~~`
+  sends a literal `~`; `~` mid-line is untouched. Override the escape character
+  with `escalate_key` (e.g. `` escalate_key: "`" ``).
+
+The hotkey works the same whether you launched via `sshmgr <alias>` or picked the
+host in the TUI, and it's MFA-agnostic — it injects nothing until you press it, so
+you decide the safe moment. If a step's `expect` never arrives within `timeout_ms`,
+the chain aborts cleanly and leaves you at the shell (it never sends the password
+into the wrong prompt). The hotkey also re-escalates after you `exit` back down.
+
+```yaml
+groups:
+  sbs:
+    login_steps_auto: false           # MFA-gated → don't auto-fire; use ~r instead
+    login_steps:
+      - command: "su - sbsadmin"
+        expect: "assword"            # matches su's "Password:" and sudo's "password for"
+        password_keyring: sbs-root
+        timeout_ms: 90000             # generous: you may pause at the MFA prompt
+      - command: "sudo su -"
+        expect: "assword"
+        password_keyring: sbs-root
+        timeout_ms: 90000
+
+hosts:
+  cm00101:
+    host: cm00101
+    groups: [sbs]                     # inherits the chain; press ~r to escalate
+  jumphost:
+    host: jumphost
+    groups: [sbs]
+    login_steps_none: true            # opt out — opens a plain shell, no chain
+```
+
+On non-MFA hosts you can leave `login_steps_auto` unset (default true) to keep the
+old auto-at-connect behavior; `~r` still works there as a manual re-trigger.
 
 ### Examples
 

@@ -208,7 +208,7 @@ func TestResolveHostDropsSelfReferentialProxyCommand(t *testing.T) {
 			// bastion-eu is the jump host itself — the proxy targets its alias
 			// even though its Host field differs.
 			"bastion-eu": {Host: "10.0.0.1", Groups: []string{"fleet"}},
-			"behind": {Host: "10.0.0.2", Groups: []string{"fleet"}},
+			"behind":     {Host: "10.0.0.2", Groups: []string{"fleet"}},
 		},
 	}
 	if h, _ := c.ResolveHost("bastion-eu"); h.ProxyCommand != "" {
@@ -245,8 +245,8 @@ func TestResolveHostSetsAlias(t *testing.T) {
 
 func TestExtractSSHJumpAlias(t *testing.T) {
 	cases := map[string]string{
-		"ssh bastion-eu -W %h:%p":         "bastion-eu",
-		"ssh -W %h:%p bastion-eu":         "bastion-eu",
+		"ssh bastion-eu -W %h:%p":     "bastion-eu",
+		"ssh -W %h:%p bastion-eu":     "bastion-eu",
 		"ssh -i k.pem -p 22 jump":     "jump",
 		"~/.ssh/knock-proxy.sh %h %p": "", // not an `ssh ...` form — never a self-loop
 		"":                            "",
@@ -255,5 +255,91 @@ func TestExtractSSHJumpAlias(t *testing.T) {
 		if got := ExtractSSHJumpAlias(in); got != want {
 			t.Errorf("ExtractSSHJumpAlias(%q): got %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestResolveHostLoginStepsInheritedFromGroup(t *testing.T) {
+	c := &Config{
+		Groups: map[string]GroupDefaults{
+			"sbs": {LoginSteps: []LoginStep{{Command: "su - sbsadmin", Expect: "assword"}}},
+		},
+		Hosts: map[string]HostConfig{
+			"a": {Host: "h", Groups: []string{"sbs"}},
+		},
+	}
+	h, _ := c.ResolveHost("a")
+	if len(h.LoginSteps) != 1 || h.LoginSteps[0].Command != "su - sbsadmin" {
+		t.Fatalf("group login_steps should propagate to host: got %+v", h.LoginSteps)
+	}
+}
+
+func TestResolveHostLoginStepsOverrideGroup(t *testing.T) {
+	c := &Config{
+		Groups: map[string]GroupDefaults{
+			"sbs": {LoginSteps: []LoginStep{{Command: "su - sbsadmin"}}},
+		},
+		Hosts: map[string]HostConfig{
+			"a": {Host: "h", Groups: []string{"sbs"}, LoginSteps: []LoginStep{{Command: "su - other"}}},
+		},
+	}
+	h, _ := c.ResolveHost("a")
+	if len(h.LoginSteps) != 1 || h.LoginSteps[0].Command != "su - other" {
+		t.Fatalf("host login_steps should win over group: got %+v", h.LoginSteps)
+	}
+}
+
+func TestResolveHostLoginStepsNoneExcludesGroup(t *testing.T) {
+	c := &Config{
+		Groups: map[string]GroupDefaults{
+			"sbs": {LoginSteps: []LoginStep{{Command: "su - sbsadmin"}}},
+		},
+		Hosts: map[string]HostConfig{
+			"a": {Host: "h", Groups: []string{"sbs"}, LoginStepsNone: true},
+		},
+	}
+	h, _ := c.ResolveHost("a")
+	if len(h.LoginSteps) != 0 {
+		t.Fatalf("login_steps_none should suppress group inheritance: got %+v", h.LoginSteps)
+	}
+}
+
+func TestResolveHostLoginStepsAutoUnsetIsNil(t *testing.T) {
+	c := &Config{Hosts: map[string]HostConfig{"a": {Host: "h"}}}
+	h, _ := c.ResolveHost("a")
+	if h.LoginStepsAuto != nil {
+		t.Fatalf("unset login_steps_auto should stay nil (consumer defaults to true), got %v", *h.LoginStepsAuto)
+	}
+}
+
+func TestResolveHostLoginStepsAutoInheritedFromGroup(t *testing.T) {
+	c := &Config{
+		Groups: map[string]GroupDefaults{"sbs": {LoginStepsAuto: boolPtr(false)}},
+		Hosts:  map[string]HostConfig{"a": {Host: "h", Groups: []string{"sbs"}}},
+	}
+	h, _ := c.ResolveHost("a")
+	if h.LoginStepsAuto == nil || *h.LoginStepsAuto != false {
+		t.Fatalf("group login_steps_auto=false should propagate, got %v", h.LoginStepsAuto)
+	}
+}
+
+func TestResolveHostLoginStepsAutoHostOverridesGroup(t *testing.T) {
+	c := &Config{
+		Groups: map[string]GroupDefaults{"sbs": {LoginStepsAuto: boolPtr(false)}},
+		Hosts:  map[string]HostConfig{"a": {Host: "h", Groups: []string{"sbs"}, LoginStepsAuto: boolPtr(true)}},
+	}
+	h, _ := c.ResolveHost("a")
+	if h.LoginStepsAuto == nil || *h.LoginStepsAuto != true {
+		t.Fatalf("host login_steps_auto=true should win over group false, got %v", h.LoginStepsAuto)
+	}
+}
+
+func TestResolveHostEscalateKeyInheritedFromGroup(t *testing.T) {
+	c := &Config{
+		Groups: map[string]GroupDefaults{"sbs": {EscalateKey: "~"}},
+		Hosts:  map[string]HostConfig{"a": {Host: "h", Groups: []string{"sbs"}}},
+	}
+	h, _ := c.ResolveHost("a")
+	if h.EscalateKey != "~" {
+		t.Fatalf("group escalate_key should propagate, got %q", h.EscalateKey)
 	}
 }

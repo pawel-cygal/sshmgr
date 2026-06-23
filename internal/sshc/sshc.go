@@ -349,9 +349,9 @@ func looksLikeDuoPrompt(prompt string) bool {
 }
 
 // hostKeyCallback returns a callback that:
-// - rejects keys that differ from a stored entry (MITM-style mismatch)
-// - on first contact, prints the fingerprint and asks the user to confirm,
-//   then appends the key to ~/.ssh/known_hosts.
+//   - rejects keys that differ from a stored entry (MITM-style mismatch)
+//   - on first contact, prints the fingerprint and asks the user to confirm,
+//     then appends the key to ~/.ssh/known_hosts.
 func hostKeyCallback(autoAccept bool) (ssh.HostKeyCallback, error) {
 	khPath, err := knownHostsPath()
 	if err != nil {
@@ -664,8 +664,12 @@ func InteractiveShell(client *ssh.Client, h config.HostConfig, steps []config.Lo
 	}
 
 	// Run login chain BEFORE switching to raw mode — output still gets mirrored
-	// to the user's terminal so they see what's happening.
-	if len(steps) > 0 {
+	// to the user's terminal so they see what's happening. Skipped when
+	// login_steps_auto is false: the chain is then available only via the
+	// in-session `~r` escalation hotkey, which avoids racing MFA prompts at
+	// connect.
+	autoRun := h.LoginStepsAuto == nil || *h.LoginStepsAuto
+	if len(steps) > 0 && autoRun {
 		statusf("[sshmgr] running %d login step(s)...\n", len(steps))
 		if err := runLoginChain(steps, h, stdoutPipe, stdinPipe); err != nil {
 			return fmt.Errorf("login chain: %w", err)
@@ -683,21 +687,31 @@ func InteractiveShell(client *ssh.Client, h config.HostConfig, steps []config.Lo
 		defer term.Restore(fd, oldState)
 	}
 
-	// Pump server output to our terminal (and the log file if requested).
-	// stdout and stderr arrive on separate goroutines; without a lock,
-	// their writes to logFile can tear at the page boundary. Wrap once in
-	// a mutex-guarded writer so audit logs are clean.
+	// Pump server output to our terminal through an expect-inspector so the
+	// in-session `~r` escalation hotkey can wait for prompts without taking the
+	// stream away from the live shell. stdout/stderr share a mutex-guarded log
+	// writer so audit logs don't tear at the page boundary.
+	var termOut io.Writer = os.Stdout
+	var errOut io.Writer = os.Stderr
 	if logFile != nil {
 		logW := &lockedWriter{w: logFile}
-		go io.Copy(io.MultiWriter(os.Stdout, logW), stdoutPipe)
-		go io.Copy(io.MultiWriter(os.Stderr, logW), stderrPipe)
-	} else {
-		go io.Copy(os.Stdout, stdoutPipe)
-		go io.Copy(os.Stderr, stderrPipe)
+		termOut = io.MultiWriter(os.Stdout, logW)
+		errOut = io.MultiWriter(os.Stderr, logW)
 	}
-	// Pump local stdin → remote. Blocks forever on terminal read after Wait
-	// returns, but main() exits and the OS reaps it.
-	go func() { _, _ = io.Copy(stdinPipe, os.Stdin) }()
+	insp := newExpectInspector(termOut)
+	go io.Copy(insp, stdoutPipe)
+	go io.Copy(errOut, stderrPipe)
+
+	// Pump local stdin → remote through the escape scanner, which intercepts the
+	// `~r` escalation hotkey (recognised at line start) and runs the host's
+	// login_steps chain on demand against the live session. Blocks forever on
+	// terminal read after Wait returns, but main() exits and the OS reaps it.
+	escalateKey := byte('~')
+	if h.EscalateKey != "" {
+		escalateKey = h.EscalateKey[0]
+	}
+	escStatus := func(s string) { fmt.Fprintf(os.Stderr, "\r\n[sshmgr] %s\r\n", s) }
+	go escalateStdinPump(stdinPipe, os.Stdin, escalateKey, steps, h, insp, escStatus)
 
 	err = session.Wait()
 	_ = stdinPipe.Close()

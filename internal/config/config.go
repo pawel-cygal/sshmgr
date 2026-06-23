@@ -14,28 +14,27 @@ import (
 type Config struct {
 	// Theme picks a UI color palette: "default" (aqua), "hacker" (matrix green),
 	// or "cyberpunk" (neon magenta/cyan). Overridden by $SSHMGR_THEME if set.
-	Theme            string                   `yaml:"theme,omitempty"`
+	Theme string `yaml:"theme,omitempty"`
 	// PlaybooksDir is where `sshmgr playbook` (and the TUI) look up a
 	// playbook given by bare name. Empty → ResolvePlaybooksDir's default.
-	PlaybooksDir     string                   `yaml:"playbooks_dir,omitempty"`
+	PlaybooksDir string `yaml:"playbooks_dir,omitempty"`
 	// SnippetsDir holds reusable snippet-library files; SnippetGlob limits
 	// which files in it are loaded. Empty → the Resolve* defaults.
-	SnippetsDir      string                   `yaml:"snippets_dir,omitempty"`
-	SnippetGlob      string                   `yaml:"snippet_glob,omitempty"`
+	SnippetsDir string `yaml:"snippets_dir,omitempty"`
+	SnippetGlob string `yaml:"snippet_glob,omitempty"`
 	// Forwards holds named, reusable port-forward profiles — the manager
 	// counterpart to ForwardHistory's transient most-recently-used list.
-	Forwards         map[string]ForwardProfile `yaml:"forwards,omitempty"`
+	Forwards map[string]ForwardProfile `yaml:"forwards,omitempty"`
 	// ForwardsDir holds file-based forward libraries; ForwardGlob filters
 	// which files in it load. Empty → the Resolve* defaults.
-	ForwardsDir      string                   `yaml:"forwards_dir,omitempty"`
-	ForwardGlob      string                   `yaml:"forward_glob,omitempty"`
-	ForwardHistory   []ForwardEntry           `yaml:"forward_history,omitempty"`
-	TransferHistory  []TransferEntry          `yaml:"transfer_history,omitempty"`
-	LoginHistory     []LoginEntry             `yaml:"login_history,omitempty"`
-	Groups           map[string]GroupDefaults `yaml:"groups,omitempty"`
-	Hosts            map[string]HostConfig    `yaml:"hosts"`
+	ForwardsDir     string                   `yaml:"forwards_dir,omitempty"`
+	ForwardGlob     string                   `yaml:"forward_glob,omitempty"`
+	ForwardHistory  []ForwardEntry           `yaml:"forward_history,omitempty"`
+	TransferHistory []TransferEntry          `yaml:"transfer_history,omitempty"`
+	LoginHistory    []LoginEntry             `yaml:"login_history,omitempty"`
+	Groups          map[string]GroupDefaults `yaml:"groups,omitempty"`
+	Hosts           map[string]HostConfig    `yaml:"hosts"`
 }
-
 
 // ForwardEntry remembers a recent port-forward invocation so the TUI can
 // suggest replays. Spec format matches the CLI: e.g. "8080:localhost:3306".
@@ -88,38 +87,50 @@ type GroupDefaults struct {
 	PasswordPrompt    *bool        `yaml:"password_prompt,omitempty"`
 	AutoDuoPush       *bool        `yaml:"auto_duo_push,omitempty"`
 	AutoAcceptHostKey *bool        `yaml:"auto_accept_host_key,omitempty"`
-	ProxyJump           string       `yaml:"proxy_jump,omitempty"`
-	ProxyCommand        string       `yaml:"proxy_command,omitempty"`
-	Become              BecomeConfig `yaml:"become,omitempty"`
-	Tags                []string     `yaml:"tags,omitempty"`
-	ForwardAgent        *bool        `yaml:"forward_agent,omitempty"`
-	ConnectTimeout      int          `yaml:"connect_timeout,omitempty"`
-	ServerAliveInterval int          `yaml:"server_alive_interval,omitempty"`
-	ServerAliveCountMax int          `yaml:"server_alive_count_max,omitempty"`
-	SSHOptions          []string     `yaml:"ssh_options,omitempty"`
-	Snippets            []Snippet    `yaml:"snippets,omitempty"`
-	SessionLog          *bool        `yaml:"session_log,omitempty"`
-	Persistent          string       `yaml:"persistent,omitempty"`
+	ProxyJump         string       `yaml:"proxy_jump,omitempty"`
+	ProxyCommand      string       `yaml:"proxy_command,omitempty"`
+	Become            BecomeConfig `yaml:"become,omitempty"`
+	// LoginSteps is inherited by every host in the group that does not define
+	// its own login_steps (and has not set login_steps_none). Lets a whole
+	// fleet share one su/sudo escalation chain.
+	LoginSteps []LoginStep `yaml:"login_steps,omitempty"`
+	// LoginStepsAuto controls whether login_steps run automatically at connect.
+	// nil → default true (auto). false → chain runs only via the in-session
+	// escalation hotkey, never at connect (use on MFA-gated hosts where
+	// auto-firing would race the MFA prompt).
+	LoginStepsAuto *bool `yaml:"login_steps_auto,omitempty"`
+	// EscalateKey overrides the in-session escalation escape character (default
+	// "~", OpenSSH-style, recognised only at line start).
+	EscalateKey         string    `yaml:"escalate_key,omitempty"`
+	Tags                []string  `yaml:"tags,omitempty"`
+	ForwardAgent        *bool     `yaml:"forward_agent,omitempty"`
+	ConnectTimeout      int       `yaml:"connect_timeout,omitempty"`
+	ServerAliveInterval int       `yaml:"server_alive_interval,omitempty"`
+	ServerAliveCountMax int       `yaml:"server_alive_count_max,omitempty"`
+	SSHOptions          []string  `yaml:"ssh_options,omitempty"`
+	Snippets            []Snippet `yaml:"snippets,omitempty"`
+	SessionLog          *bool     `yaml:"session_log,omitempty"`
+	Persistent          string    `yaml:"persistent,omitempty"`
 }
 
 type HostConfig struct {
-	Host              string       `yaml:"host" json:"host"`
-	Port              int          `yaml:"port,omitempty" json:"port,omitempty"`
-	User              string       `yaml:"user,omitempty" json:"user,omitempty"`
-	Key               string       `yaml:"key,omitempty" json:"key,omitempty"`
+	Host string `yaml:"host" json:"host"`
+	Port int    `yaml:"port,omitempty" json:"port,omitempty"`
+	User string `yaml:"user,omitempty" json:"user,omitempty"`
+	Key  string `yaml:"key,omitempty" json:"key,omitempty"`
 	// SSH-auth password (used when the server requests password or
 	// keyboard-interactive without a Duo-style prompt). Resolution order
 	// matches LoginStep: Password > PasswordEnv > PasswordKeyring > PasswordCmd
 	// > PasswordPrompt. PasswordKeyring and PasswordCmd expand the placeholders
 	// {{alias}} / {{host}} / {{user}} / {{port}} — so one group-level value
 	// can serve a whole fleet of per-host vault entries.
-	Password          string       `yaml:"password,omitempty" json:"password,omitempty"`
-	PasswordEnv       string       `yaml:"password_env,omitempty" json:"password_env,omitempty"`
-	PasswordKeyring   string       `yaml:"password_keyring,omitempty" json:"password_keyring,omitempty"`
-	PasswordCmd       string       `yaml:"password_cmd,omitempty" json:"password_cmd,omitempty"`
-	PasswordPrompt    bool         `yaml:"password_prompt,omitempty" json:"password_prompt,omitempty"`
-	AutoDuoPush       bool         `yaml:"auto_duo_push,omitempty" json:"auto_duo_push,omitempty"`
-	AutoAcceptHostKey bool         `yaml:"auto_accept_host_key,omitempty" json:"auto_accept_host_key,omitempty"`
+	Password          string `yaml:"password,omitempty" json:"password,omitempty"`
+	PasswordEnv       string `yaml:"password_env,omitempty" json:"password_env,omitempty"`
+	PasswordKeyring   string `yaml:"password_keyring,omitempty" json:"password_keyring,omitempty"`
+	PasswordCmd       string `yaml:"password_cmd,omitempty" json:"password_cmd,omitempty"`
+	PasswordPrompt    bool   `yaml:"password_prompt,omitempty" json:"password_prompt,omitempty"`
+	AutoDuoPush       bool   `yaml:"auto_duo_push,omitempty" json:"auto_duo_push,omitempty"`
+	AutoAcceptHostKey bool   `yaml:"auto_accept_host_key,omitempty" json:"auto_accept_host_key,omitempty"`
 	// External=true means "just exec `ssh <Host>` and let OpenSSH handle
 	// everything (knock, auth, Duo)". Use for hosts that need ssh-config
 	// features sshmgr's Go SSH library can't do (ProxyCommand, Match blocks, etc.).
@@ -132,19 +143,29 @@ type HostConfig struct {
 	// Alias is the host's config key. Runtime-only (never serialized);
 	// ResolveHost fills it so downstream code — e.g. password_cmd
 	// placeholder expansion — can reference the host by its sshmgr name.
-	Alias string `yaml:"-" json:"-"`
-	ProxyJump    string       `yaml:"proxy_jump,omitempty" json:"proxy_jump,omitempty"`
-	ProxyCommand string       `yaml:"proxy_command,omitempty" json:"proxy_command,omitempty"`
-	Groups       []string     `yaml:"groups,omitempty" json:"groups,omitempty"`
-	Tags         []string     `yaml:"tags,omitempty" json:"tags,omitempty"`
+	Alias        string   `yaml:"-" json:"-"`
+	ProxyJump    string   `yaml:"proxy_jump,omitempty" json:"proxy_jump,omitempty"`
+	ProxyCommand string   `yaml:"proxy_command,omitempty" json:"proxy_command,omitempty"`
+	Groups       []string `yaml:"groups,omitempty" json:"groups,omitempty"`
+	Tags         []string `yaml:"tags,omitempty" json:"tags,omitempty"`
 	// Pinned floats the host to the top of the TUI host list.
-	Pinned bool `yaml:"pinned,omitempty" json:"pinned,omitempty"`
-	Become       BecomeConfig `yaml:"become,omitempty" json:"become,omitempty,omitzero"`
+	Pinned bool         `yaml:"pinned,omitempty" json:"pinned,omitempty"`
+	Become BecomeConfig `yaml:"become,omitempty" json:"become,omitempty,omitzero"`
 	// LoginSteps runs a sequence of expect/response commands after the shell
 	// opens, before handing control to the user. Use for chains like
 	// `su - deployer` then `sudo su -`, each with its own password prompt.
 	LoginSteps []LoginStep `yaml:"login_steps,omitempty" json:"login_steps,omitempty"`
-	Commands   []string    `yaml:"commands,omitempty" json:"commands,omitempty"`
+	// LoginStepsNone, when true, suppresses any group-inherited login_steps so
+	// this host opens a plain shell. Survives config round-trips (unlike an
+	// empty login_steps:, which omitempty would drop on save). Use to exclude
+	// individual hosts from a group's escalation chain.
+	LoginStepsNone bool `yaml:"login_steps_none,omitempty" json:"login_steps_none,omitempty"`
+	// LoginStepsAuto: nil → default true (login_steps run at connect). false →
+	// they run only via the in-session escalation hotkey. Inherited from group.
+	LoginStepsAuto *bool `yaml:"login_steps_auto,omitempty" json:"login_steps_auto,omitempty"`
+	// EscalateKey overrides the escalation escape character (default "~").
+	EscalateKey string   `yaml:"escalate_key,omitempty" json:"escalate_key,omitempty"`
+	Commands    []string `yaml:"commands,omitempty" json:"commands,omitempty"`
 	// Snippets are saved one-liners attached to a host. The TUI exposes them
 	// under 'c' (pick from menu); inherited from a host's groups too.
 	Snippets []Snippet `yaml:"snippets,omitempty" json:"snippets,omitempty"`
@@ -194,14 +215,15 @@ type Snippet struct {
 
 // LoginStep represents one command + expect/response in a post-login chain.
 // Example:
-//   command="su - deployer", expect="Password:", password_keyring="deployer-secret"
+//
+//	command="su - deployer", expect="Password:", password_keyring="deployer-secret"
 //
 // Password resolution order (first non-empty wins):
-//   1. Response   — literal plaintext (NOT recommended outside ad-hoc tests)
-//   2. PasswordEnv  — environment variable name
-//   3. PasswordKeyring — OS keyring entry under service "sshmgr"
-//   4. PasswordCmd  — shell command, stdout (first line) is the password
-//   5. PasswordPrompt — prompt user once at connect time
+//  1. Response   — literal plaintext (NOT recommended outside ad-hoc tests)
+//  2. PasswordEnv  — environment variable name
+//  3. PasswordKeyring — OS keyring entry under service "sshmgr"
+//  4. PasswordCmd  — shell command, stdout (first line) is the password
+//  5. PasswordPrompt — prompt user once at connect time
 type LoginStep struct {
 	Command         string `yaml:"command" json:"command"`
 	Expect          string `yaml:"expect,omitempty" json:"expect,omitempty"`
@@ -306,6 +328,15 @@ func (c *Config) ResolveHost(alias string) (HostConfig, bool) {
 		}
 		if h.Become.User == "" {
 			h.Become = g.Become
+		}
+		if len(h.LoginSteps) == 0 && !h.LoginStepsNone {
+			h.LoginSteps = g.LoginSteps
+		}
+		if h.LoginStepsAuto == nil {
+			h.LoginStepsAuto = g.LoginStepsAuto
+		}
+		if h.EscalateKey == "" {
+			h.EscalateKey = g.EscalateKey
 		}
 		// Implicit tag: group name itself becomes a tag.
 		tagSet[gname] = struct{}{}
