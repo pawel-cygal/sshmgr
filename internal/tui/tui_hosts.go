@@ -37,6 +37,13 @@ func (s *uiState) openForm(originalAlias string, h config.HostConfig) {
 		becomeMethod = "sudo"
 	}
 	commands := strings.Join(h.Commands, "\n")
+	var kvmHost, kvmScheme, kvmUser, kvmKeyring string
+	if h.KVM != nil {
+		kvmHost = h.KVM.Host
+		kvmScheme = h.KVM.Scheme
+		kvmUser = h.KVM.User
+		kvmKeyring = h.KVM.PasswordKeyring
+	}
 
 	form.AddInputField("alias", alias, 30, nil, func(v string) { alias = strings.TrimSpace(v) })
 	form.AddInputField("host", host, 40, nil, func(v string) { host = strings.TrimSpace(v) })
@@ -58,6 +65,10 @@ func (s *uiState) openForm(originalAlias string, h config.HostConfig) {
 	form.AddInputField("become user", becomeUser, 30, nil, func(v string) { becomeUser = strings.TrimSpace(v) })
 	form.AddDropDown("become method", []string{"sudo", "su"}, indexOf([]string{"sudo", "su"}, becomeMethod), func(v string, _ int) { becomeMethod = v })
 	form.AddTextArea("commands (one per line)", commands, 60, 6, 0, func(v string) { commands = v })
+	form.AddInputField("kvm host (ip/name)", kvmHost, 40, nil, func(v string) { kvmHost = strings.TrimSpace(v) })
+	form.AddInputField("kvm scheme (http/https)", kvmScheme, 12, nil, func(v string) { kvmScheme = strings.TrimSpace(v) })
+	form.AddInputField("kvm user", kvmUser, 20, nil, func(v string) { kvmUser = strings.TrimSpace(v) })
+	form.AddInputField("kvm password_keyring", kvmKeyring, 30, nil, func(v string) { kvmKeyring = strings.TrimSpace(v) })
 
 	if dd, ok := form.GetFormItemByLabel("become method").(*tview.DropDown); ok {
 		dd.SetListStyles(
@@ -122,6 +133,14 @@ func (s *uiState) openForm(originalAlias string, h config.HostConfig) {
 		}
 		if becomeUser != "" {
 			newHost.Become = config.BecomeConfig{Method: becomeMethod, User: becomeUser}
+		}
+		if kvmHost != "" {
+			newHost.KVM = &config.KVMConfig{
+				Host:            kvmHost,
+				Scheme:          kvmScheme,
+				User:            kvmUser,
+				PasswordKeyring: kvmKeyring,
+			}
 		}
 		s.cfg.Hosts[alias] = newHost
 		if err := config.Save(s.cfg, s.configPath); err != nil {
@@ -253,6 +272,7 @@ func (s *uiState) deleteGroupPrompt() {
 //   - else if the cursor is on a tree group node, run on every host in
 //     that group
 //   - else run on the single highlighted host
+//
 // On submit the TUI exits and main re-execs `sshmgr exec --host a,b,c <cmd>`
 // (or --group <g>).
 // scopeSelector resolves the current selection into a fleet target: the
@@ -283,4 +303,3 @@ func (s *uiState) confirmDelete(alias string) {
 		})
 	s.pages.AddPage("confirm", modal, true, true)
 }
-

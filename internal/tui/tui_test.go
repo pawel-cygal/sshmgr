@@ -195,6 +195,9 @@ func TestHostMatchesQuery(t *testing.T) {
 		{"plain text miss", web, "web1", "zzz", false},
 		{"unknown prefix falls back to plain text, no error", web, "web1", "foo:bar", false},
 		{"empty query matches", web, "web1", "", true},
+		{"badge kvm matches a host with a kvm address", config.HostConfig{Host: "h", KVM: &config.KVMConfig{Host: "1.2.3.4"}}, "alg1", "kvm", true},
+		{"badge kvm absent on a plain host", web, "web1", "kvm", false},
+		{"badge duo matches an auto_duo_push host", config.HostConfig{Host: "h", AutoDuoPush: true}, "alg1", "duo", true},
 	}
 	for _, c := range cases {
 		if got := hostMatchesQuery(c.h, c.alias, c.query); got != c.want {

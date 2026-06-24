@@ -164,8 +164,16 @@ func hostMatchesQuery(h config.HostConfig, alias, query string) bool {
 		// unknown prefix — fall through to plain-text matching
 	}
 	hay := strings.ToLower(alias + " " + h.Host + " " + h.User + " " +
-		strings.Join(h.Tags, " ") + " " + strings.Join(h.Groups, " "))
+		strings.Join(h.Tags, " ") + " " + strings.Join(h.Groups, " ") + " " + badgeTokens(h))
 	return strings.Contains(hay, query)
+}
+
+// badgeTokens returns the badge keywords for a resolved host so the filter can
+// match them as plain text (e.g. typing "kvm" or "duo" finds the badged hosts).
+// Derived from the badge renderer itself so the two never drift — any badge
+// hostBadges shows is automatically filterable.
+func badgeTokens(h config.HostConfig) string {
+	return stripColorTags(hostBadges(h))
 }
 
 // anyContainsFold reports whether any list element contains sub, case-fold.
@@ -404,7 +412,6 @@ func (s *uiState) currentGroup() string {
 	return ""
 }
 
-
 func uniqueSorted(in []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(in))
@@ -418,4 +425,3 @@ func uniqueSorted(in []string) []string {
 	sort.Strings(out)
 	return out
 }
-
