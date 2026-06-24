@@ -147,12 +147,10 @@ func Run(cfg *config.Config) []Finding {
 		host := k.ResolvedHost(map[string]string{
 			"alias": alias, "host": resolved.Host, "user": resolved.User,
 		})
+		// An empty host means the block is just group-inherited credentials with
+		// no device for this host — not configured here, so nothing to validate.
 		if strings.TrimSpace(host) == "" {
-			out = append(out, Finding{
-				Severity: SevError,
-				Scope:    alias,
-				Message:  "kvm has no host",
-			})
+			continue
 		}
 		if k.Password == "" && k.PasswordEnv == "" && k.PasswordKeyring == "" && k.PasswordCmd == "" && !k.PasswordPrompt {
 			out = append(out, Finding{

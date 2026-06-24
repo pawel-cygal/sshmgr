@@ -3,12 +3,17 @@ package kvm
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/md5" //nolint:gosec // EVP_BytesToKey KDF mandated by NanoKVM's CryptoJS login, not used for security
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -21,39 +26,39 @@ func init() { Register("nanokvm", newNanoKVM) }
 const (
 	pressShort = 800
 	pressForce = 6000
+	// loginKey is the CryptoJS passphrase the NanoKVM web frontend uses to
+	// obfuscate the password on HTTP devices.
+	loginKey = "nanokvm-sipeed-2024"
+	// authCookie is where the device expects the JWT back (it does NOT Set-Cookie;
+	// the web client copies data.token into this cookie itself).
+	authCookie = "nano-kvm-token"
 )
 
-// nanoKVM drives a Sipeed NanoKVM over its HTTP API. Auth is a JWT returned by
-// /api/auth/login as a cookie; the client's cookie jar carries it into
-// subsequent /api/vm/gpio calls. Login is lazy (first action that needs it).
+// nanoKVM drives a Sipeed NanoKVM over its HTTP API. Login returns a JWT in
+// data.token (no Set-Cookie); the driver sends it back as the nano-kvm-token
+// cookie on every subsequent call. The password is encrypted client-side with
+// CryptoJS's OpenSSL-compatible AES-256-CBC. Login is lazy.
 type nanoKVM struct {
 	client *http.Client
 	base   string
 	user   string
 	pass   PasswordFunc
 
-	mu     sync.Mutex
-	authed bool
+	mu    sync.Mutex
+	token string
 }
 
 func newNanoKVM(k config.KVMConfig, resolvedHost string, pass PasswordFunc) (Provider, error) {
 	if resolvedHost == "" {
 		return nil, errors.New("kvm host is empty")
 	}
-	c := httpClient(k)
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		return nil, err
-	}
-	c.Jar = jar
 	user := k.User
 	if user == "" {
 		user = "admin"
 	}
-	return &nanoKVM{client: c, base: BaseURL(k, resolvedHost), user: user, pass: pass}, nil
+	return &nanoKVM{client: httpClient(k), base: BaseURL(k, resolvedHost), user: user, pass: pass}, nil
 }
 
-// apiResp is the common NanoKVM envelope: code 0 means success.
 type apiResp struct {
 	Code int             `json:"code"`
 	Msg  string          `json:"msg"`
@@ -63,21 +68,32 @@ type apiResp struct {
 func (n *nanoKVM) ensureAuth(ctx context.Context) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if n.authed {
+	if n.token != "" {
 		return nil
 	}
 	pw, err := n.pass()
 	if err != nil {
 		return fmt.Errorf("resolve kvm password: %w", err)
 	}
+	enc, err := encryptPassword(pw, loginKey)
+	if err != nil {
+		return fmt.Errorf("encrypt kvm password: %w", err)
+	}
 	var resp apiResp
-	if err := n.post(ctx, "/api/auth/login", map[string]string{"username": n.user, "password": pw}, &resp); err != nil {
+	if err := n.post(ctx, "/api/auth/login", map[string]string{"username": n.user, "password": enc}, &resp); err != nil {
 		return fmt.Errorf("kvm login: %w", err)
 	}
 	if resp.Code != 0 {
 		return fmt.Errorf("kvm login rejected (code %d) %s", resp.Code, resp.Msg)
 	}
-	n.authed = true
+	var tok struct {
+		Token string `json:"token"`
+	}
+	_ = json.Unmarshal(resp.Data, &tok)
+	if tok.Token == "" {
+		return errors.New("kvm login returned no token")
+	}
+	n.token = tok.Token
 	return nil
 }
 
@@ -99,22 +115,32 @@ func (n *nanoKVM) Reset(ctx context.Context) error { return n.gpio(ctx, "reset",
 func (n *nanoKVM) Power(ctx context.Context) error { return n.gpio(ctx, "power", pressShort) }
 func (n *nanoKVM) Off(ctx context.Context) error   { return n.gpio(ctx, "power", pressForce) }
 
-// Status authenticates and reports what the device exposes. The exact
-// power-state endpoint varies by firmware; this is best-effort and verified on a
-// real device. Auth success alone confirms the KVM is reachable and credentials
-// are valid.
+// Status authenticates and reads /api/vm/info, returning a short summary.
 func (n *nanoKVM) Status(ctx context.Context) (string, error) {
 	if err := n.ensureAuth(ctx); err != nil {
 		return "", err
 	}
 	var resp apiResp
 	if err := n.get(ctx, "/api/vm/info", &resp); err != nil {
-		return "reachable (auth ok; state endpoint unavailable)", nil
+		return "reachable (auth ok; /api/vm/info unavailable)", nil
 	}
-	if len(resp.Data) > 0 {
-		return strings.TrimSpace(string(resp.Data)), nil
+	var info struct {
+		Application string `json:"application"`
+		IP          string `json:"ip"`
+		Mdns        string `json:"mdns"`
 	}
-	return "reachable (auth ok)", nil
+	_ = json.Unmarshal(resp.Data, &info)
+	parts := []string{"online"}
+	if info.Application != "" {
+		parts = append(parts, "fw "+info.Application)
+	}
+	if info.IP != "" {
+		parts = append(parts, "ip "+info.IP)
+	}
+	if info.Mdns != "" {
+		parts = append(parts, info.Mdns)
+	}
+	return strings.Join(parts, " · "), nil
 }
 
 func (n *nanoKVM) WebURL() string { return n.base }
@@ -141,6 +167,9 @@ func (n *nanoKVM) get(ctx context.Context, path string, out *apiResp) error {
 }
 
 func (n *nanoKVM) do(req *http.Request, out *apiResp) error {
+	if n.token != "" {
+		req.AddCookie(&http.Cookie{Name: authCookie, Value: n.token})
+	}
 	r, err := n.client.Do(req)
 	if err != nil {
 		return err
@@ -156,6 +185,47 @@ func (n *nanoKVM) do(req *http.Request, out *apiResp) error {
 		}
 	}
 	return nil
+}
+
+// encryptPassword reproduces CryptoJS.AES.encrypt(password, passphrase).toString()
+// then encodeURIComponent: an OpenSSL "Salted__"+salt+ciphertext blob (AES-256-CBC,
+// key/iv derived from the passphrase via EVP_BytesToKey/MD5), base64-encoded and
+// URL-escaped. This is what the NanoKVM web UI sends on HTTP devices.
+func encryptPassword(plain, passphrase string) (string, error) {
+	salt := make([]byte, 8)
+	if _, err := rand.Read(salt); err != nil {
+		return "", err
+	}
+	key, iv := evpBytesToKey([]byte(passphrase), salt, 32, 16)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	padded := pkcs7Pad([]byte(plain), aes.BlockSize)
+	ct := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, iv).CryptBlocks(ct, padded)
+	blob := append([]byte("Salted__"), salt...)
+	blob = append(blob, ct...)
+	return url.QueryEscape(base64.StdEncoding.EncodeToString(blob)), nil
+}
+
+// evpBytesToKey is OpenSSL's MD5-based key derivation, as used by CryptoJS.
+func evpBytesToKey(passphrase, salt []byte, keyLen, ivLen int) (key, iv []byte) {
+	var d, prev []byte
+	for len(d) < keyLen+ivLen {
+		h := md5.New() //nolint:gosec // protocol-mandated KDF
+		h.Write(prev)
+		h.Write(passphrase)
+		h.Write(salt)
+		prev = h.Sum(nil)
+		d = append(d, prev...)
+	}
+	return d[:keyLen], d[keyLen : keyLen+ivLen]
+}
+
+func pkcs7Pad(data []byte, blockSize int) []byte {
+	n := blockSize - len(data)%blockSize
+	return append(data, bytes.Repeat([]byte{byte(n)}, n)...)
 }
 
 func snippet(b []byte) string {

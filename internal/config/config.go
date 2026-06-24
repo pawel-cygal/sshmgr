@@ -373,8 +373,49 @@ func (c *Config) ResolveHost(alias string) (HostConfig, bool) {
 		if h.EscalateKey == "" {
 			h.EscalateKey = g.EscalateKey
 		}
-		if h.KVM == nil {
-			h.KVM = g.KVM
+		if g.KVM != nil {
+			if h.KVM == nil {
+				h.KVM = g.KVM
+			} else {
+				// Field-merge: host fields win, group fills the rest — so a group
+				// can hold shared creds while each host supplies only its address.
+				m := *h.KVM
+				gk := g.KVM
+				if m.Type == "" {
+					m.Type = gk.Type
+				}
+				if m.Host == "" {
+					m.Host = gk.Host
+				}
+				if m.Scheme == "" {
+					m.Scheme = gk.Scheme
+				}
+				if m.Port == 0 {
+					m.Port = gk.Port
+				}
+				if m.User == "" {
+					m.User = gk.User
+				}
+				if m.Password == "" {
+					m.Password = gk.Password
+				}
+				if m.PasswordEnv == "" {
+					m.PasswordEnv = gk.PasswordEnv
+				}
+				if m.PasswordKeyring == "" {
+					m.PasswordKeyring = gk.PasswordKeyring
+				}
+				if m.PasswordCmd == "" {
+					m.PasswordCmd = gk.PasswordCmd
+				}
+				if !m.PasswordPrompt {
+					m.PasswordPrompt = gk.PasswordPrompt
+				}
+				if m.Insecure == nil {
+					m.Insecure = gk.Insecure
+				}
+				h.KVM = &m
+			}
 		}
 		// Implicit tag: group name itself becomes a tag.
 		tagSet[gname] = struct{}{}

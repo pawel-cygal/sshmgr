@@ -359,6 +359,29 @@ func TestResolveHostKVMOverridesGroup(t *testing.T) {
 	}
 }
 
+func TestResolveHostKVMFieldMerge(t *testing.T) {
+	// Group carries the shared credentials; the host supplies only its address
+	// (e.g. a Tailscale IP). Both must survive resolution.
+	c := &Config{
+		Groups: map[string]GroupDefaults{
+			"sbs": {KVM: &KVMConfig{User: "admin", PasswordKeyring: "kvm-root"}},
+		},
+		Hosts: map[string]HostConfig{
+			"a": {Host: "h", Groups: []string{"sbs"}, KVM: &KVMConfig{Host: "100.64.0.5"}},
+		},
+	}
+	h, _ := c.ResolveHost("a")
+	if h.KVM == nil {
+		t.Fatal("kvm should resolve")
+	}
+	if h.KVM.Host != "100.64.0.5" {
+		t.Errorf("host address should come from the host block, got %q", h.KVM.Host)
+	}
+	if h.KVM.User != "admin" || h.KVM.PasswordKeyring != "kvm-root" {
+		t.Errorf("group creds should fill in: got user=%q keyring=%q", h.KVM.User, h.KVM.PasswordKeyring)
+	}
+}
+
 func TestKVMResolvedHostExpandsPlaceholders(t *testing.T) {
 	k := KVMConfig{Host: "{{alias}}-kvm"}
 	got := k.ResolvedHost(map[string]string{"alias": "alg00001"})

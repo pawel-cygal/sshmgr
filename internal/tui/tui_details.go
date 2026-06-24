@@ -29,7 +29,7 @@ func hostBadges(h config.HostConfig) string {
 	if h.Persistent != "" {
 		chips = append(chips, chip(h.Persistent, theme.Current.AccentB))
 	}
-	if h.KVM != nil {
+	if h.KVM != nil && h.KVM.Host != "" {
 		chips = append(chips, chip("KVM", theme.Current.AccentB))
 	}
 	out := strings.Join(chips, " ")
@@ -121,7 +121,7 @@ func (s *uiState) showDetails(alias string) {
 				accent, i+1, st.Command, dim, st.Expect, env)
 		}
 	}
-	if h.KVM != nil {
+	if h.KVM != nil && h.KVM.Host != "" {
 		kvmHost := h.KVM.ResolvedHost(map[string]string{
 			"alias": alias, "host": h.Host, "user": h.User, "port": strconv.Itoa(h.Port),
 		})
@@ -161,7 +161,7 @@ func (s *uiState) showDetails(alias string) {
 	// when there's a live tunnel that can actually be stopped.
 	fmt.Fprintf(&b, "\n%sactions[-]\n", prim)
 	fmt.Fprintf(&b, "  %si[-] inspect config   %s*[-] pin / unpin\n", hk, hk)
-	if h.KVM != nil {
+	if h.KVM != nil && h.KVM.Host != "" {
 		fmt.Fprintf(&b, "  %sV[-] kvm power menu (reset / power / off / web / status)\n", hk)
 	}
 	if len(hostActive) > 0 {
