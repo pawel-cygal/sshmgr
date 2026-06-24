@@ -592,6 +592,11 @@ sshmgr kvm <alias> status    # auth + report reachability/state
 you pass `--yes`. The KVM uses the same backend its web power button drives, so it works on
 any controller already wired to the motherboard headers — no extra hardware.
 
+In the TUI a host with a `kvm:` block shows a **KVM** badge and its resolved address in the
+details panel; press **`V`** for the power menu (Reset / Power / Off / Open web / Status).
+reset/power/off confirm in a modal first; the network calls run off the UI thread so the
+list stays responsive, and the outcome is shown when done.
+
 TLS note: NanoKVM ships a self-signed certificate, so the KVM HTTP client skips
 certificate verification by default. This is scoped to the KVM client only and the device
 is normally reached over Tailscale (an already-encrypted, authenticated mesh). Set

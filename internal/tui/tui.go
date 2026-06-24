@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strings"
 
-
 	"sshmgr/internal/banner"
 	"sshmgr/internal/config"
 	"sshmgr/internal/theme"
@@ -283,6 +282,11 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 				state.killActiveForHost(alias)
 			}
 			return nil
+		case 'V':
+			if alias := state.currentAlias(); alias != "" {
+				state.openKVMMenu(alias)
+			}
+			return nil
 		}
 		return event
 	}
@@ -394,6 +398,7 @@ func fullHelpText() string {
 	b.WriteString(row("a / e / d", "add / edit / delete host"))
 	b.WriteString(row("A / R / D", "add / rename / delete group"))
 	b.WriteString(row("K", "stop the host's active forward (one at a time)"))
+	b.WriteString(row("V", "kvm power menu (reset / power / off / web / status)"))
 	b.WriteString(row("Esc / q", "clear filter, or quit"))
 	b.WriteString("\n" + hd + "Filter queries[-]  " + theme.Current.DimTag() + "(type after /)[-]\n")
 	b.WriteString(row("tag:NAME", "hosts with a matching tag"))

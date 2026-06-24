@@ -29,6 +29,9 @@ func hostBadges(h config.HostConfig) string {
 	if h.Persistent != "" {
 		chips = append(chips, chip(h.Persistent, theme.Current.AccentB))
 	}
+	if h.KVM != nil {
+		chips = append(chips, chip("KVM", theme.Current.AccentB))
+	}
 	out := strings.Join(chips, " ")
 	if len(h.Tags) > 0 {
 		tags := theme.Current.DimTag() + "#" + strings.Join(h.Tags, " #") + "[-]"
@@ -118,6 +121,16 @@ func (s *uiState) showDetails(alias string) {
 				accent, i+1, st.Command, dim, st.Expect, env)
 		}
 	}
+	if h.KVM != nil {
+		kvmHost := h.KVM.ResolvedHost(map[string]string{
+			"alias": alias, "host": h.Host, "user": h.User, "port": strconv.Itoa(h.Port),
+		})
+		typ := h.KVM.Type
+		if typ == "" {
+			typ = "nanokvm"
+		}
+		label("kvm", accent, kvmHost+"  "+dim+"("+typ+")[-]")
+	}
 	if len(h.Commands) > 0 {
 		fmt.Fprintf(&b, "\n%scommands:[-]\n", prim)
 		for _, c := range h.Commands {
@@ -148,6 +161,9 @@ func (s *uiState) showDetails(alias string) {
 	// when there's a live tunnel that can actually be stopped.
 	fmt.Fprintf(&b, "\n%sactions[-]\n", prim)
 	fmt.Fprintf(&b, "  %si[-] inspect config   %s*[-] pin / unpin\n", hk, hk)
+	if h.KVM != nil {
+		fmt.Fprintf(&b, "  %sV[-] kvm power menu (reset / power / off / web / status)\n", hk)
+	}
 	if len(hostActive) > 0 {
 		suffix := "stop active forward"
 		if len(hostActive) > 1 {

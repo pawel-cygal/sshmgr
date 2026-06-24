@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"sshmgr/internal/config"
-	"sshmgr/internal/snippets"
 	"sshmgr/internal/exec"
+	"sshmgr/internal/snippets"
 )
 
 func TestPlaybookExtraArgs(t *testing.T) {
@@ -117,6 +117,9 @@ func TestHostBadges(t *testing.T) {
 		if !strings.Contains(full, want) {
 			t.Errorf("badge strip missing %q: %q", want, full)
 		}
+	}
+	if got := hostBadges(config.HostConfig{Host: "h", KVM: &config.KVMConfig{Host: "h-kvm"}}); !strings.Contains(got, "KVM") {
+		t.Errorf("host with a kvm block should show a KVM badge, got %q", got)
 	}
 }
 
@@ -249,9 +252,9 @@ func TestFilterResolved(t *testing.T) {
 	}{
 		{"", []string{"uptime", "docker-logs", "deploy"}},
 		{"docker", []string{"docker-logs"}},
-		{"BIG", []string{"docker-logs"}},                  // case-insensitive on Description
-		{"deploy-blue", []string{"deploy"}},               // matches Command
-		{"file:fleet", []string{"docker-logs"}},             // matches Source
+		{"BIG", []string{"docker-logs"}},        // case-insensitive on Description
+		{"deploy-blue", []string{"deploy"}},     // matches Command
+		{"file:fleet", []string{"docker-logs"}}, // matches Source
 		{"nope", nil},
 	}
 	for _, c := range cases {
