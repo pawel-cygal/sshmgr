@@ -67,11 +67,13 @@ func isLineEnd(b byte) bool { return b == '\n' || b == '\r' }
 type expectInspector struct {
 	out io.Writer
 
-	mu      sync.Mutex
-	armed   bool
-	pattern []byte
-	acc     []byte
-	found   chan struct{}
+	mu           sync.Mutex
+	armed        bool
+	pattern      []byte
+	acc          []byte
+	found        chan struct{}
+	sawOutput    bool
+	lastActivity time.Time
 }
 
 func newExpectInspector(out io.Writer) *expectInspector {
@@ -82,6 +84,8 @@ func (e *expectInspector) Write(p []byte) (int, error) {
 	n, err := e.out.Write(p)
 	e.mu.Lock()
 	if e.armed && n > 0 {
+		e.sawOutput = true
+		e.lastActivity = time.Now()
 		e.acc = append(e.acc, p[:n]...)
 		if bytes.Contains(e.acc, e.pattern) {
 			e.armed = false
@@ -100,28 +104,59 @@ func (e *expectInspector) arm(pattern string) {
 	e.pattern = []byte(pattern)
 	e.acc = e.acc[:0]
 	e.found = make(chan struct{})
+	e.sawOutput = false
+	e.lastActivity = time.Now()
 	e.mu.Unlock()
 }
 
-// wait blocks until the armed pattern appears or timeout elapses.
-func (e *expectInspector) wait(timeout time.Duration) error {
+func (e *expectInspector) disarm() {
+	e.mu.Lock()
+	e.armed = false
+	e.mu.Unlock()
+}
+
+// wait blocks until the armed pattern appears (returns true), the output goes
+// idle after the command produced some text without the pattern (returns false —
+// the command finished without prompting, e.g. cached sudo or passwordless), or
+// the hard timeout elapses with no output at all (returns an error). The idle
+// path is what stops a re-escalation from hanging when `sudo` has cached creds
+// and never reprints its password prompt.
+func (e *expectInspector) wait(timeout, idle time.Duration) (bool, error) {
 	e.mu.Lock()
 	ch := e.found
 	pat := string(e.pattern)
 	e.mu.Unlock()
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-ch:
-		return nil
-	case <-timer.C:
-		e.mu.Lock()
-		e.armed = false
-		e.mu.Unlock()
-		return fmt.Errorf("timeout waiting for %q after %s", pat, timeout)
+	hard := time.NewTimer(timeout)
+	defer hard.Stop()
+	tick := time.NewTicker(idle / 2)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ch:
+			return true, nil
+		case <-hard.C:
+			e.disarm()
+			return false, fmt.Errorf("timeout waiting for %q after %s", pat, timeout)
+		case <-tick.C:
+			e.mu.Lock()
+			stillArmed := e.armed
+			idleNow := e.sawOutput && time.Since(e.lastActivity) >= idle
+			e.mu.Unlock()
+			if stillArmed && idleNow {
+				e.disarm()
+				return false, nil
+			}
+		}
 	}
 }
+
+// escalationIdle is how long the runner waits for a step's password prompt to
+// stop producing output before concluding the command finished without asking
+// for a password (e.g. sudo with cached credentials). Generous enough that a
+// real, fast su/sudo prompt always wins the race first.
+const escalationIdle = 2 * time.Second
 
 // escalateStdinPump copies src (the local terminal) to dst (the remote stdin),
 // intercepting the `<escape>r` hotkey at line start. On trigger it runs the
@@ -149,7 +184,7 @@ func escalateStdinPump(dst io.Writer, src io.Reader, escape byte, steps []config
 				}
 				continue
 			}
-			if err := runEscalation(steps, h, dst, insp, status); err != nil && status != nil {
+			if err := runEscalation(steps, h, dst, insp, escalationIdle, status); err != nil && status != nil {
 				status("escalation aborted: " + err.Error())
 			}
 		}
@@ -160,11 +195,14 @@ func escalateStdinPump(dst io.Writer, src io.Reader, escape byte, steps []config
 }
 
 // runEscalation drives steps against an already-open, already-pumping session:
-// for each step it arms the inspector, writes the command, waits for the expect
-// substring, then writes the resolved password. On any timeout or resolution
-// error it returns WITHOUT sending that step's password, leaving the user at the
-// live shell. status, if non-nil, receives human-readable progress lines.
-func runEscalation(steps []config.LoginStep, h config.HostConfig, w io.Writer, insp *expectInspector, status func(string)) error {
+// for each step it arms the inspector, writes the command, then waits for the
+// expect substring. If the prompt appears it sends the resolved password; if the
+// command instead finishes without prompting (output goes idle for `idle` — e.g.
+// `sudo` with cached credentials on a re-escalation), it skips the password and
+// moves on. On a hard timeout (no output at all) or a resolution error it returns
+// WITHOUT sending that step's password, leaving the user at the live shell.
+// status, if non-nil, receives human-readable progress lines.
+func runEscalation(steps []config.LoginStep, h config.HostConfig, w io.Writer, insp *expectInspector, idle time.Duration, status func(string)) error {
 	for i, step := range steps {
 		if step.Command == "" {
 			return fmt.Errorf("step %d: empty command", i+1)
@@ -185,8 +223,17 @@ func runEscalation(steps []config.LoginStep, h config.HostConfig, w io.Writer, i
 		if step.TimeoutMS > 0 {
 			timeout = time.Duration(step.TimeoutMS) * time.Millisecond
 		}
-		if err := insp.wait(timeout); err != nil {
+		matched, err := insp.wait(timeout, idle)
+		if err != nil {
 			return fmt.Errorf("step %d (%q): %w", i+1, step.Command, err)
+		}
+		if !matched {
+			// No password prompt appeared (cached sudo / passwordless): the
+			// command already succeeded, so skip the password and continue.
+			if status != nil {
+				status("no password prompt for " + step.Command + " — continuing")
+			}
+			continue
 		}
 		pw, err := secret.Resolve(step, h)
 		if err != nil {

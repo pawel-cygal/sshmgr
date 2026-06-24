@@ -150,7 +150,7 @@ func TestRunEscalationSendsCommandThenPassword(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- runEscalation(steps, config.HostConfig{}, &out, insp, func(string) {})
+		done <- runEscalation(steps, config.HostConfig{}, &out, insp, 200*time.Millisecond, func(string) {})
 	}()
 	// Runner arms expect then writes the command; once we see it, simulate the
 	// remote printing the password prompt.
@@ -176,8 +176,8 @@ func TestRunEscalationTimeoutDoesNotSendPassword(t *testing.T) {
 	steps := []config.LoginStep{
 		{Command: "su - x", Expect: "Password:", Response: "s3cret", TimeoutMS: 40},
 	}
-	// Never feed the prompt → the step must time out.
-	err := runEscalation(steps, config.HostConfig{}, &out, insp, func(string) {})
+	// Never feed any output → no idle signal, the step must hard-time out.
+	err := runEscalation(steps, config.HostConfig{}, &out, insp, 500*time.Millisecond, func(string) {})
 	if err == nil {
 		t.Fatal("expected a timeout error")
 	}
@@ -199,7 +199,7 @@ func TestRunEscalationTwoStepsInOrder(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- runEscalation(steps, config.HostConfig{}, &out, insp, func(string) {})
+		done <- runEscalation(steps, config.HostConfig{}, &out, insp, 200*time.Millisecond, func(string) {})
 	}()
 	waitUntil(t, time.Second, func() bool { return strings.Contains(out.String(), "su - sbsadmin") })
 	insp.Write([]byte("Password: "))
@@ -216,5 +216,37 @@ func TestRunEscalationTwoStepsInOrder(t *testing.T) {
 	}
 	if got := out.String(); got != "su - sbsadmin\np1\nsudo su -\np2\n" {
 		t.Fatalf("two-step order wrong, got %q", got)
+	}
+}
+
+// Reproduces the sudo-credential-cache hang: on a re-escalation `sudo su -`
+// does not prompt (cached), so the expected "assword" never arrives. The runner
+// must notice the output went idle, skip the password, and finish instead of
+// blocking until the hard timeout.
+func TestRunEscalationSkipsPasswordWhenPromptNeverComes(t *testing.T) {
+	insp := newExpectInspector(io.Discard)
+	var out syncBuffer
+	steps := []config.LoginStep{
+		{Command: "sudo su -", Expect: "assword", Response: "p1", TimeoutMS: 5000},
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- runEscalation(steps, config.HostConfig{}, &out, insp, 150*time.Millisecond, func(string) {})
+	}()
+	waitUntil(t, time.Second, func() bool { return strings.Contains(out.String(), "sudo su -") })
+	// sudo with cached creds drops straight to root — a prompt that is NOT the
+	// password prompt — then the stream goes quiet.
+	insp.Write([]byte("root@host:~# "))
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("cached/passwordless step must not error, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runEscalation hung instead of detecting idle output")
+	}
+	if strings.Contains(out.String(), "p1") {
+		t.Fatalf("password must NOT be sent when no password prompt appeared, got %q", out.String())
 	}
 }
