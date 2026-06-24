@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"sshmgr/internal/config"
 	"sshmgr/internal/forwards"
@@ -131,6 +132,33 @@ func Run(cfg *config.Config) []Finding {
 				Severity: SevInfo,
 				Scope:    alias,
 				Message:  "auto_duo_push has no effect on external hosts (OpenSSH handles auth)",
+			})
+		}
+	}
+
+	// 5b. KVM blocks: a configured controller needs a reachable host and a way
+	// to authenticate, or every kvm action will fail at runtime.
+	for alias := range cfg.Hosts {
+		resolved, _ := cfg.ResolveHost(alias)
+		k := resolved.KVM
+		if k == nil {
+			continue
+		}
+		host := k.ResolvedHost(map[string]string{
+			"alias": alias, "host": resolved.Host, "user": resolved.User,
+		})
+		if strings.TrimSpace(host) == "" {
+			out = append(out, Finding{
+				Severity: SevError,
+				Scope:    alias,
+				Message:  "kvm has no host",
+			})
+		}
+		if k.Password == "" && k.PasswordEnv == "" && k.PasswordKeyring == "" && k.PasswordCmd == "" && !k.PasswordPrompt {
+			out = append(out, Finding{
+				Severity: SevWarn,
+				Scope:    alias,
+				Message:  "kvm has no password backend (set kvm.password_keyring or similar)",
 			})
 		}
 	}

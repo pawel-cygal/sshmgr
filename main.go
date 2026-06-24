@@ -63,6 +63,8 @@ func main() {
 		cmdTheme(args[1:])
 	case "fwd", "forward":
 		cmdFwd(args[1:])
+	case "kvm":
+		cmdKVM(args[1:])
 	case "history":
 		cmdHistory(args[1:])
 	case "completion":

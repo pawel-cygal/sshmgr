@@ -333,6 +333,44 @@ func TestResolveHostLoginStepsAutoHostOverridesGroup(t *testing.T) {
 	}
 }
 
+func TestResolveHostKVMInheritedFromGroup(t *testing.T) {
+	c := &Config{
+		Groups: map[string]GroupDefaults{
+			"sbs": {KVM: &KVMConfig{Host: "{{alias}}-kvm", User: "admin"}},
+		},
+		Hosts: map[string]HostConfig{"a": {Host: "h", Groups: []string{"sbs"}}},
+	}
+	h, _ := c.ResolveHost("a")
+	if h.KVM == nil || h.KVM.User != "admin" || h.KVM.Host != "{{alias}}-kvm" {
+		t.Fatalf("group kvm should propagate to host, got %+v", h.KVM)
+	}
+}
+
+func TestResolveHostKVMOverridesGroup(t *testing.T) {
+	c := &Config{
+		Groups: map[string]GroupDefaults{"sbs": {KVM: &KVMConfig{Host: "group-kvm"}}},
+		Hosts: map[string]HostConfig{
+			"a": {Host: "h", Groups: []string{"sbs"}, KVM: &KVMConfig{Host: "host-kvm"}},
+		},
+	}
+	h, _ := c.ResolveHost("a")
+	if h.KVM == nil || h.KVM.Host != "host-kvm" {
+		t.Fatalf("host kvm should win over group, got %+v", h.KVM)
+	}
+}
+
+func TestKVMResolvedHostExpandsPlaceholders(t *testing.T) {
+	k := KVMConfig{Host: "{{alias}}-kvm"}
+	got := k.ResolvedHost(map[string]string{"alias": "alg00001"})
+	if got != "alg00001-kvm" {
+		t.Fatalf("ResolvedHost expansion: got %q, want alg00001-kvm", got)
+	}
+	// Group sharing must not be mutated by resolution (no pointer aliasing surprises).
+	if k.Host != "{{alias}}-kvm" {
+		t.Fatalf("ResolvedHost must not mutate the receiver, got %q", k.Host)
+	}
+}
+
 func TestResolveHostEscalateKeyInheritedFromGroup(t *testing.T) {
 	c := &Config{
 		Groups: map[string]GroupDefaults{"sbs": {EscalateKey: "~"}},

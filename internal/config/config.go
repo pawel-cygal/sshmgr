@@ -101,16 +101,18 @@ type GroupDefaults struct {
 	LoginStepsAuto *bool `yaml:"login_steps_auto,omitempty"`
 	// EscalateKey overrides the in-session escalation escape character (default
 	// "~", OpenSSH-style, recognised only at line start).
-	EscalateKey         string    `yaml:"escalate_key,omitempty"`
-	Tags                []string  `yaml:"tags,omitempty"`
-	ForwardAgent        *bool     `yaml:"forward_agent,omitempty"`
-	ConnectTimeout      int       `yaml:"connect_timeout,omitempty"`
-	ServerAliveInterval int       `yaml:"server_alive_interval,omitempty"`
-	ServerAliveCountMax int       `yaml:"server_alive_count_max,omitempty"`
-	SSHOptions          []string  `yaml:"ssh_options,omitempty"`
-	Snippets            []Snippet `yaml:"snippets,omitempty"`
-	SessionLog          *bool     `yaml:"session_log,omitempty"`
-	Persistent          string    `yaml:"persistent,omitempty"`
+	EscalateKey string `yaml:"escalate_key,omitempty"`
+	// KVM is the out-of-band controller, inherited by hosts without their own.
+	KVM                 *KVMConfig `yaml:"kvm,omitempty"`
+	Tags                []string   `yaml:"tags,omitempty"`
+	ForwardAgent        *bool      `yaml:"forward_agent,omitempty"`
+	ConnectTimeout      int        `yaml:"connect_timeout,omitempty"`
+	ServerAliveInterval int        `yaml:"server_alive_interval,omitempty"`
+	ServerAliveCountMax int        `yaml:"server_alive_count_max,omitempty"`
+	SSHOptions          []string   `yaml:"ssh_options,omitempty"`
+	Snippets            []Snippet  `yaml:"snippets,omitempty"`
+	SessionLog          *bool      `yaml:"session_log,omitempty"`
+	Persistent          string     `yaml:"persistent,omitempty"`
 }
 
 type HostConfig struct {
@@ -164,8 +166,10 @@ type HostConfig struct {
 	// they run only via the in-session escalation hotkey. Inherited from group.
 	LoginStepsAuto *bool `yaml:"login_steps_auto,omitempty" json:"login_steps_auto,omitempty"`
 	// EscalateKey overrides the escalation escape character (default "~").
-	EscalateKey string   `yaml:"escalate_key,omitempty" json:"escalate_key,omitempty"`
-	Commands    []string `yaml:"commands,omitempty" json:"commands,omitempty"`
+	EscalateKey string `yaml:"escalate_key,omitempty" json:"escalate_key,omitempty"`
+	// KVM is this host's out-of-band controller (inherited from group if unset).
+	KVM      *KVMConfig `yaml:"kvm,omitempty" json:"kvm,omitempty"`
+	Commands []string   `yaml:"commands,omitempty" json:"commands,omitempty"`
 	// Snippets are saved one-liners attached to a host. The TUI exposes them
 	// under 'c' (pick from menu); inherited from a host's groups too.
 	Snippets []Snippet `yaml:"snippets,omitempty" json:"snippets,omitempty"`
@@ -233,6 +237,37 @@ type LoginStep struct {
 	PasswordCmd     string `yaml:"password_cmd,omitempty" json:"password_cmd,omitempty"`
 	PasswordPrompt  bool   `yaml:"password_prompt,omitempty" json:"password_prompt,omitempty"`
 	TimeoutMS       int    `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
+}
+
+// KVMConfig describes a host's out-of-band KVM controller (e.g. a Sipeed
+// NanoKVM reachable over Tailscale as {alias}-kvm). Its credentials are
+// independent of the host's SSH auth. Inherited from a group when the host
+// defines none. Host is placeholder-expanded ({{alias}}/{{host}}/{{user}}/{{port}})
+// via ResolvedHost, so a group can carry one templated address for the fleet.
+type KVMConfig struct {
+	Type            string `yaml:"type,omitempty" json:"type,omitempty"` // driver; default "nanokvm"
+	Host            string `yaml:"host,omitempty" json:"host,omitempty"`
+	Scheme          string `yaml:"scheme,omitempty" json:"scheme,omitempty"` // default "https"
+	Port            int    `yaml:"port,omitempty" json:"port,omitempty"`
+	User            string `yaml:"user,omitempty" json:"user,omitempty"`
+	Password        string `yaml:"password,omitempty" json:"password,omitempty"`
+	PasswordEnv     string `yaml:"password_env,omitempty" json:"password_env,omitempty"`
+	PasswordKeyring string `yaml:"password_keyring,omitempty" json:"password_keyring,omitempty"`
+	PasswordCmd     string `yaml:"password_cmd,omitempty" json:"password_cmd,omitempty"`
+	PasswordPrompt  bool   `yaml:"password_prompt,omitempty" json:"password_prompt,omitempty"`
+	// Insecure skips TLS verification for the KVM HTTP client only (NanoKVM ships
+	// a self-signed cert). nil → default true; set false to require a valid cert.
+	Insecure *bool `yaml:"insecure,omitempty" json:"insecure,omitempty"`
+}
+
+// ResolvedHost expands {{alias}}/{{host}}/... placeholders in Host without
+// mutating the receiver (group-shared KVMConfigs must stay templated).
+func (k KVMConfig) ResolvedHost(vars map[string]string) string {
+	h := k.Host
+	for key, val := range vars {
+		h = strings.ReplaceAll(h, "{{"+key+"}}", val)
+	}
+	return h
 }
 
 // ResolveHost returns the host with group defaults merged in.
@@ -337,6 +372,9 @@ func (c *Config) ResolveHost(alias string) (HostConfig, bool) {
 		}
 		if h.EscalateKey == "" {
 			h.EscalateKey = g.EscalateKey
+		}
+		if h.KVM == nil {
+			h.KVM = g.KVM
 		}
 		// Implicit tag: group name itself becomes a tag.
 		tagSet[gname] = struct{}{}

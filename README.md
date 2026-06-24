@@ -367,6 +367,7 @@ hosts:
 | `login_steps_none` | bool | opt this host out of a group-inherited `login_steps` chain |
 | `login_steps_auto` | bool | run `login_steps` at connect (default true); set false to use the `~r` hotkey instead |
 | `escalate_key` | string | escape character for the in-session escalation hotkey (default `~`) |
+| `kvm` | map | out-of-band KVM controller (see below); inheritable from a group |
 | `x11_forward` | bool | request X11 forwarding so remote GUI apps render locally |
 | `forward_agent` | bool | forward local ssh-agent into the session |
 | `persistent` | string | wraps the remote shell in `tmux` (or `screen`) named `sshmgr-<alias>` so it survives disconnects |
@@ -555,6 +556,49 @@ hosts:
 
 On non-MFA hosts you can leave `login_steps_auto` unset (default true) to keep the
 old auto-at-connect behavior; `~r` still works there as a manual re-trigger.
+
+### KVM — out-of-band power
+
+Hosts with an out-of-band KVM controller (e.g. a Sipeed NanoKVM reached over Tailscale
+as `{alias}-kvm`) can be power-cycled from sshmgr — useful exactly when SSH is down. The
+`kvm:` block is inheritable from a group and has its OWN credentials, independent of the
+host's SSH login:
+
+```yaml
+groups:
+  sbs:
+    kvm:
+      type: nanokvm             # driver; default nanokvm
+      host: "{{alias}}-kvm"     # {{alias}}/{{host}}/{{user}}/{{port}} expanded per host
+      user: admin               # KVM account — unrelated to the SSH user
+      password_keyring: kvm-root # resolves like any sshmgr password (keyring/env/cmd/prompt)
+hosts:
+  alg00001:
+    user: gn                    # SSH login
+    kvm: { host: alg00001-kvm } # override when the name differs
+```
+
+Store the KVM password once: `sshmgr keyring set kvm-root`. Then:
+
+```
+sshmgr kvm <alias> reset     # press reset (confirms first)
+sshmgr kvm <alias> power     # short power-button press
+sshmgr kvm <alias> off       # long press / force off
+sshmgr kvm <alias> web       # open the KVM web UI in a browser
+sshmgr kvm <alias> status    # auth + report reachability/state
+```
+
+`reset`/`power`/`off` prompt for confirmation (naming the host AND the KVM address) unless
+you pass `--yes`. The KVM uses the same backend its web power button drives, so it works on
+any controller already wired to the motherboard headers — no extra hardware.
+
+TLS note: NanoKVM ships a self-signed certificate, so the KVM HTTP client skips
+certificate verification by default. This is scoped to the KVM client only and the device
+is normally reached over Tailscale (an already-encrypted, authenticated mesh). Set
+`kvm: { insecure: false }` to require a valid certificate.
+
+Other KVM types plug in as in-tree drivers behind the same `Provider` interface — set
+`kvm.type` to select one. Only `nanokvm` ships today.
 
 ### Examples
 
