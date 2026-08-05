@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 )
 
 // writeLib writes a snippet library file into dir and returns dir.

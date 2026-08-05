@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 )
 
 func TestTarget(t *testing.T) {
@@ -104,7 +104,7 @@ func TestSFTPArgvUsesCapitalPortFlag(t *testing.T) {
 
 func TestFwdArgv(t *testing.T) {
 	got := FwdArgv(config.HostConfig{Host: "h", User: "u"}, "-L", "8080:localhost:80")
-	want := []string{"-N", "-L", "8080:localhost:80", "u@h"}
+	want := []string{"-N", "-o", "ExitOnForwardFailure=yes", "-L", "8080:localhost:80", "u@h"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("fwd argv:\n got  %v\n want %v", got, want)
 	}
@@ -112,7 +112,7 @@ func TestFwdArgv(t *testing.T) {
 
 func TestFwdArgvDynamicWithOptions(t *testing.T) {
 	got := FwdArgv(config.HostConfig{Host: "h", Port: 2222}, "-D", "1080")
-	want := []string{"-N", "-D", "1080", "-p", "2222", "h"}
+	want := []string{"-N", "-o", "ExitOnForwardFailure=yes", "-D", "1080", "-p", "2222", "h"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("dynamic fwd argv:\n got  %v\n want %v", got, want)
 	}
@@ -184,6 +184,17 @@ func TestCapturedArgvPinsBatchMode(t *testing.T) {
 	}
 	if argv[len(argv)-1] != "uptime" {
 		t.Errorf("command should be the last arg: %v", argv)
+	}
+}
+
+func TestCappedBufferBoundsOutput(t *testing.T) {
+	b := newCappedBuffer(4)
+	if n, err := b.Write([]byte("abcdefgh")); err != nil || n != 8 {
+		t.Fatalf("Write = %d, %v", n, err)
+	}
+	got := b.String()
+	if !strings.HasPrefix(got, "abcd") || !strings.Contains(got, "output truncated after 4 bytes") {
+		t.Fatalf("unexpected capped output %q", got)
 	}
 }
 

@@ -11,8 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 
 	"github.com/zalando/go-keyring"
 	"golang.org/x/term"
@@ -144,22 +145,35 @@ type pwCall struct {
 	err error
 }
 
-// password_cmd results are memoised for the process lifetime: a fleet-wide
-// command (or a TUI session running many actions) then invokes the secret
-// CLI — and any biometric prompt — only once per distinct command line.
+type pwCacheEntry struct {
+	val     string
+	expires time.Time
+}
+
+// password_cmd results are memoised briefly: a fleet-wide command invokes the
+// secret CLI — and any biometric prompt — only once per distinct command line,
+// while a long-lived TUI does not retain stale credentials forever. Override
+// the five-minute default with SSHMGR_PASSWORD_CACHE_TTL (Go duration, e.g.
+// "30s" or "0" to disable successful-result caching).
 // pwInflight gives singleflight semantics; pwDone caches successes only, so a
 // transient failure is retried rather than poisoning the cache.
 var (
 	pwMu       sync.Mutex
-	pwDone     = map[string]string{}
+	pwDone     = map[string]pwCacheEntry{}
 	pwInflight = map[string]*pwCall{}
 )
 
 func runPasswordCmd(cmdline string) (string, error) {
+	now := time.Now()
 	pwMu.Lock()
-	if v, ok := pwDone[cmdline]; ok {
+	for key, entry := range pwDone {
+		if !now.Before(entry.expires) {
+			delete(pwDone, key)
+		}
+	}
+	if entry, ok := pwDone[cmdline]; ok {
 		pwMu.Unlock()
-		return v, nil
+		return entry.val, nil
 	}
 	if c, ok := pwInflight[cmdline]; ok {
 		pwMu.Unlock()
@@ -176,11 +190,24 @@ func runPasswordCmd(cmdline string) (string, error) {
 
 	pwMu.Lock()
 	delete(pwInflight, cmdline)
-	if c.err == nil {
-		pwDone[cmdline] = c.val
+	if ttl := passwordCacheTTL(); c.err == nil && ttl > 0 {
+		pwDone[cmdline] = pwCacheEntry{val: c.val, expires: time.Now().Add(ttl)}
 	}
 	pwMu.Unlock()
 	return c.val, c.err
+}
+
+func passwordCacheTTL() time.Duration {
+	const fallback = 5 * time.Minute
+	value := strings.TrimSpace(os.Getenv("SSHMGR_PASSWORD_CACHE_TTL"))
+	if value == "" {
+		return fallback
+	}
+	ttl, err := time.ParseDuration(value)
+	if err != nil || ttl < 0 {
+		return fallback
+	}
+	return ttl
 }
 
 // execPasswordCmd runs cmdline via `sh -c` and returns the first line of

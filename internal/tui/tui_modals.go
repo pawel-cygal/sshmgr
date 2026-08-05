@@ -1,8 +1,7 @@
 package tui
 
 import (
-
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -88,4 +87,3 @@ func (s *uiState) modal(text string, onClose func()) {
 		})
 	s.pages.AddPage("info", m, true, true)
 }
-

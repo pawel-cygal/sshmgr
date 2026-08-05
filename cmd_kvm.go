@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/kvm"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/kvm"
 )
 
 // cmdKVM implements `sshmgr kvm <alias> <action> [--yes]`, controlling a host's
@@ -24,7 +24,7 @@ func cmdKVM(args []string) {
 		}
 		rest = append(rest, a)
 	}
-	if len(rest) < 2 {
+	if len(rest) != 2 {
 		fatal("usage: sshmgr kvm <alias> <reset|power|off|web|status> [--yes]")
 	}
 	alias, action := rest[0], rest[1]

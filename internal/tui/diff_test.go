@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"sshmgr/internal/exec"
+	"github.com/systeampl/sshmgr/internal/exec"
 
 	"github.com/rivo/tview"
 )
@@ -58,6 +58,35 @@ func TestLineDiffAddRemoveEqual(t *testing.T) {
 	}
 	if dels != 1 || adds != 1 || eq != 2 {
 		t.Errorf("expected 1 del, 1 add, 2 eq; got dels=%d adds=%d eq=%d", dels, adds, eq)
+	}
+}
+
+func TestLineDiffLargeInputUsesBoundedFallback(t *testing.T) {
+	a := make([]string, 3000)
+	b := make([]string, 3000)
+	a[0], b[0] = "same-prefix", "same-prefix"
+	a[len(a)-1], b[len(b)-1] = "same-suffix", "same-suffix"
+	for i := 1; i < len(a)-1; i++ {
+		a[i] = "a"
+		b[i] = "b"
+	}
+	ops := lineDiff(a, b)
+	if len(ops) != 2+2*(len(a)-2) {
+		t.Fatalf("fallback edit script length = %d", len(ops))
+	}
+	if ops[0].Kind != ' ' || ops[len(ops)-1].Kind != ' ' {
+		t.Fatalf("fallback should preserve common prefix/suffix")
+	}
+}
+
+func TestSplitLinesCapsPathologicalOutput(t *testing.T) {
+	input := strings.Repeat("x\n", maxDiffLines+10)
+	lines := splitLines(input)
+	if len(lines) != maxDiffLines+1 {
+		t.Fatalf("split line cap: got %d lines", len(lines))
+	}
+	if !strings.Contains(lines[len(lines)-1], "truncated") {
+		t.Fatalf("missing truncation marker: %q", lines[len(lines)-1])
 	}
 }
 

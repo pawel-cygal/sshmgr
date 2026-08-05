@@ -5,17 +5,22 @@ import (
 	"os"
 	"syscall"
 
-	"sshmgr/internal/completion"
-	"sshmgr/internal/config"
-	"sshmgr/internal/theme"
-	"sshmgr/internal/transfer"
-	"sshmgr/internal/tui"
-
-
+	"github.com/systeampl/sshmgr/internal/completion"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/transfer"
+	"github.com/systeampl/sshmgr/internal/tui"
 )
 
 func main() {
 	args := os.Args[1:]
+	// Version information must remain available even when the user's config is
+	// missing or invalid. This also makes release/installation smoke tests safe:
+	// they do not need to touch operational configuration.
+	if len(args) > 0 && (args[0] == "version" || args[0] == "--version") {
+		cmdVersion(args[1:])
+		return
+	}
 	// Pick theme from env/config once at startup so every TUI subcommand
 	// (Run, RunFiles) starts with the same palette regardless of which
 	// process re-exec'd into us.
@@ -122,22 +127,25 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "  sshmgr theme [<name>]       list / set UI theme (default | hacker | cyberpunk)")
 	fmt.Fprintln(w, "  sshmgr fwd <alias> -L/-R/-D <spec>")
 	fmt.Fprintln(w, "                              port forwarding: -L local, -R remote, -D SOCKS5")
+	fmt.Fprintln(w, "  sshmgr kvm <alias> <reset|power|off|web|status> [--yes]")
+	fmt.Fprintln(w, "                              control the host's out-of-band KVM")
 	fmt.Fprintln(w, "  sshmgr history [transfers|forwards|logins]")
 	fmt.Fprintln(w, "                              show recent activity")
-    fmt.Fprintln(w, "  sshmgr exec [--group G|--tag T|--host a,b|--all] [-p N] [--diff] [--json] <cmd…>")
-    fmt.Fprintln(w, "                              run a command across many hosts; also --timeout D,")
-    fmt.Fprintln(w, "                              --retry N, --fail-fast, --dry-run")
-    fmt.Fprintln(w, "  sshmgr watch [-n SECS] <alias> <cmd…>")
-    fmt.Fprintln(w, "                              re-run a command on a host with change highlighting")
-    fmt.Fprintln(w, "  sshmgr rotate-key --new-key PATH [--group G|--tag T|--host a,b|--all] [--remove-old] [--dry-run]")
-    fmt.Fprintln(w, "                              safely roll a new SSH key across a fleet")
-    fmt.Fprintln(w, "  sshmgr import (ssh-config [path] | ansible <inv> | hosts <file>) [--group G] [--only glob] [--dry-run]")
-    fmt.Fprintln(w, "                              import hosts from ssh_config / Ansible inventory / etc-hosts")
-    fmt.Fprintln(w, "  sshmgr export ansible [--format yaml|ini] [selectors] [--out path]")
-    fmt.Fprintln(w, "                              generate an Ansible inventory from the fleet")
-    fmt.Fprintln(w, "  sshmgr playbook <file> [selectors] [--check] [--diff] [--limit E] [--extra-vars V]")
-    fmt.Fprintln(w, "                              run an Ansible playbook against selected hosts")
-    fmt.Fprintln(w, "  sshmgr lint [--json]        validate config (groups, refs, keys, snippets)")
+	fmt.Fprintln(w, "  sshmgr exec [--group G|--tag T|--host a,b|--all] [-p N] [--diff] [--json] <cmd…>")
+	fmt.Fprintln(w, "                              run a command across many hosts; also --timeout D,")
+	fmt.Fprintln(w, "                              --retry N, --fail-fast, --dry-run")
+	fmt.Fprintln(w, "  sshmgr watch [-n SECS] <alias> <cmd…>")
+	fmt.Fprintln(w, "                              re-run a command on a host with change highlighting")
+	fmt.Fprintln(w, "  sshmgr rotate-key --new-key PATH [--group G|--tag T|--host a,b|--all] [--remove-old] [--dry-run]")
+	fmt.Fprintln(w, "                              safely roll a new SSH key across a fleet")
+	fmt.Fprintln(w, "  sshmgr import (ssh-config [path] | ansible <inv> | hosts <file>) [--group G] [--only glob] [--dry-run]")
+	fmt.Fprintln(w, "                              import hosts from ssh_config / Ansible inventory / etc-hosts")
+	fmt.Fprintln(w, "  sshmgr export ansible [--format yaml|ini] [selectors] [--out path]")
+	fmt.Fprintln(w, "                              generate an Ansible inventory from the fleet")
+	fmt.Fprintln(w, "  sshmgr playbook <file> [selectors] [--check] [--diff] [--limit E] [--extra-vars V]")
+	fmt.Fprintln(w, "                              run an Ansible playbook against selected hosts")
+	fmt.Fprintln(w, "  sshmgr lint [--json]        validate config (groups, refs, keys, snippets)")
+	fmt.Fprintln(w, "  sshmgr version [--json]     print build and platform information")
 	fmt.Fprintln(w, "  sshmgr completion <shell>   emit shell completion (bash|zsh|fish)")
 	fmt.Fprintln(w, "  sshmgr help                 show this help")
 	fmt.Fprintln(w, "")

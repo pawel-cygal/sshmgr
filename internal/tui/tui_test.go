@@ -5,11 +5,14 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/exec"
-	"sshmgr/internal/snippets"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/exec"
+	"github.com/systeampl/sshmgr/internal/snippets"
 )
 
 func TestPlaybookExtraArgs(t *testing.T) {
@@ -321,5 +324,58 @@ func TestHelpTextCoversFooterActions(t *testing.T) {
 		if !strings.Contains(got, label) {
 			t.Errorf("footer is missing the %q action", label)
 		}
+	}
+}
+
+func TestRenameJumpAliasPreservesChainOrder(t *testing.T) {
+	if got := renameJumpAlias("edge, old ,final", "old", "new"); got != "edge,new,final" {
+		t.Fatalf("renameJumpAlias: %q", got)
+	}
+}
+
+func TestHostAliasReferencesCoversHostsGroupsAndForwards(t *testing.T) {
+	cfg := &config.Config{
+		Hosts: map[string]config.HostConfig{
+			"jump": {Host: "10.0.0.1"},
+			"web":  {Host: "10.0.0.2", ProxyJump: "jump"},
+		},
+		Groups: map[string]config.GroupDefaults{
+			"prod": {ProxyCommand: "ssh jump -W %h:%p"},
+		},
+		Forwards: map[string]config.ForwardProfile{
+			"db": {Alias: "jump", Type: "L", Spec: "3306:db:3306"},
+		},
+	}
+	want := []string{"forward db", "group prod", "host web"}
+	if got := cfg.AliasReferences("jump"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("references: got %v, want %v", got, want)
+	}
+}
+
+func TestMemoProbeSingleflightsConcurrentCallers(t *testing.T) {
+	cache := map[string]*probeCall{}
+	var mu sync.Mutex
+	var calls atomic.Int32
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			got := memoProbe(cache, &mu, "same", func() pingStatus {
+				calls.Add(1)
+				time.Sleep(10 * time.Millisecond)
+				return statusOnline
+			})
+			if got != statusOnline {
+				t.Errorf("probe status = %v", got)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("underlying probe ran %d times, want 1", got)
 	}
 }

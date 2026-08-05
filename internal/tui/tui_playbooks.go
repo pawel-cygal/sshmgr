@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"sshmgr/internal/ansible"
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/ansible"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"

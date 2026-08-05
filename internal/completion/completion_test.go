@@ -36,8 +36,8 @@ func TestSuggestOffersAllPublicSubcommands(t *testing.T) {
 	// Every command dispatched by main.go's switch must be completable.
 	for _, want := range []string{
 		"ui", "list", "groups", "info", "add", "edit", "rm", "trust",
-		"theme", "keyring", "scp", "sftp", "files", "fwd", "exec",
-		"watch", "rotate-key", "import", "export", "playbook", "lint",
+		"theme", "keyring", "scp", "sftp", "files", "fwd", "kvm", "exec",
+		"watch", "rotate-key", "import", "export", "playbook", "lint", "version",
 		"history", "completion", "help",
 	} {
 		if !got[want] {

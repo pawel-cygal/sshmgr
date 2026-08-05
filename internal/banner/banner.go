@@ -2,7 +2,7 @@
 // and in CLI help output.
 package banner
 
-import "sshmgr/internal/theme"
+import "github.com/systeampl/sshmgr/internal/theme"
 
 // ASCII is the multi-line banner. Width is ~78 columns including the wolf
 // head on the right. Designed to fit a standard 80-column terminal.

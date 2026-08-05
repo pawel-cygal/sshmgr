@@ -1,10 +1,14 @@
 package config
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"os/user"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -12,6 +16,10 @@ import (
 )
 
 type Config struct {
+	sourcePath string
+	sourceHash [sha256.Size]byte
+	hasSource  bool
+
 	// Theme picks a UI color palette: "default" (aqua), "hacker" (matrix green),
 	// or "cyberpunk" (neon magenta/cyan). Overridden by $SSHMGR_THEME if set.
 	Theme string `yaml:"theme,omitempty"`
@@ -116,6 +124,8 @@ type GroupDefaults struct {
 }
 
 type HostConfig struct {
+	setFields map[string]bool
+
 	Host string `yaml:"host" json:"host"`
 	Port int    `yaml:"port,omitempty" json:"port,omitempty"`
 	User string `yaml:"user,omitempty" json:"user,omitempty"`
@@ -203,6 +213,112 @@ type HostConfig struct {
 	Persistent string `yaml:"persistent,omitempty" json:"persistent,omitempty"`
 }
 
+var hostBoolFields = []string{
+	"password_prompt", "auto_duo_push", "auto_accept_host_key", "forward_agent", "session_log",
+}
+
+func (h *HostConfig) UnmarshalYAML(node *yaml.Node) error {
+	type plain HostConfig
+	if err := validateMappingNode(node, reflect.TypeOf(plain{})); err != nil {
+		return err
+	}
+	if child := mappingValue(node, "become"); child != nil {
+		if err := validateMappingNode(child, reflect.TypeOf(BecomeConfig{})); err != nil {
+			return err
+		}
+	}
+	if child := mappingValue(node, "login_steps"); child != nil && child.Kind == yaml.SequenceNode {
+		for _, item := range child.Content {
+			if err := validateMappingNode(item, reflect.TypeOf(LoginStep{})); err != nil {
+				return err
+			}
+		}
+	}
+	if child := mappingValue(node, "snippets"); child != nil && child.Kind == yaml.SequenceNode {
+		for _, item := range child.Content {
+			if err := validateMappingNode(item, reflect.TypeOf(Snippet{})); err != nil {
+				return err
+			}
+		}
+	}
+	var decoded plain
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*h = HostConfig(decoded)
+	h.setFields = mappingKeys(node, hostBoolFields)
+	return nil
+}
+
+func (h HostConfig) MarshalYAML() (any, error) {
+	type plain HostConfig
+	var node yaml.Node
+	if err := node.Encode(plain(h)); err != nil {
+		return nil, err
+	}
+	for _, name := range hostBoolFields {
+		if h.setFields[name] && !mappingHasKey(&node, name) {
+			appendBoolNode(&node, name, false)
+		}
+	}
+	return &node, nil
+}
+
+func (h HostConfig) boolWasSet(name string, value bool) bool {
+	return value || h.setFields[name]
+}
+
+func (h *HostConfig) markBool(name string, value bool) {
+	if h.setFields == nil {
+		h.setFields = map[string]bool{}
+	}
+	h.setFields[name] = true
+	switch name {
+	case "auto_duo_push":
+		h.AutoDuoPush = value
+	case "auto_accept_host_key":
+		h.AutoAcceptHostKey = value
+	}
+}
+
+func (h *HostConfig) SetAutoDuoPush(value bool)       { h.markBool("auto_duo_push", value) }
+func (h *HostConfig) SetAutoAcceptHostKey(value bool) { h.markBool("auto_accept_host_key", value) }
+
+// Redacted returns a deep-enough copy safe for diagnostic JSON. Literal
+// secrets and commands that may embed secret-manager tokens are replaced,
+// while backend references (environment/keyring names) remain visible.
+func (h HostConfig) Redacted() HostConfig {
+	const marker = "[redacted]"
+	if h.Password != "" {
+		h.Password = marker
+	}
+	if h.PasswordCmd != "" {
+		h.PasswordCmd = marker
+	}
+	if len(h.LoginSteps) > 0 {
+		h.LoginSteps = append([]LoginStep(nil), h.LoginSteps...)
+		for i := range h.LoginSteps {
+			if h.LoginSteps[i].Response != "" {
+				h.LoginSteps[i].Response = marker
+			}
+			if h.LoginSteps[i].PasswordCmd != "" {
+				h.LoginSteps[i].PasswordCmd = marker
+			}
+		}
+	}
+	if h.KVM != nil {
+		kvm := *h.KVM
+		if kvm.Password != "" {
+			kvm.Password = marker
+		}
+		if kvm.PasswordCmd != "" {
+			kvm.PasswordCmd = marker
+		}
+		h.KVM = &kvm
+	}
+	return h
+}
+
 type BecomeConfig struct {
 	Method string `yaml:"method,omitempty" json:"method,omitempty"`
 	User   string `yaml:"user,omitempty" json:"user,omitempty"`
@@ -245,6 +361,8 @@ type LoginStep struct {
 // defines none. Host is placeholder-expanded ({{alias}}/{{host}}/{{user}}/{{port}})
 // via ResolvedHost, so a group can carry one templated address for the fleet.
 type KVMConfig struct {
+	setFields map[string]bool
+
 	Type            string `yaml:"type,omitempty" json:"type,omitempty"` // driver; default "nanokvm"
 	Host            string `yaml:"host,omitempty" json:"host,omitempty"`
 	Scheme          string `yaml:"scheme,omitempty" json:"scheme,omitempty"` // default "https"
@@ -258,6 +376,106 @@ type KVMConfig struct {
 	// Insecure skips TLS verification for the KVM HTTP client only (NanoKVM ships
 	// a self-signed cert). nil → default true; set false to require a valid cert.
 	Insecure *bool `yaml:"insecure,omitempty" json:"insecure,omitempty"`
+}
+
+func (k *KVMConfig) UnmarshalYAML(node *yaml.Node) error {
+	type plain KVMConfig
+	if err := validateMappingNode(node, reflect.TypeOf(plain{})); err != nil {
+		return err
+	}
+	var decoded plain
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*k = KVMConfig(decoded)
+	k.setFields = mappingKeys(node, []string{"password_prompt"})
+	return nil
+}
+
+func (k KVMConfig) MarshalYAML() (any, error) {
+	type plain KVMConfig
+	var node yaml.Node
+	if err := node.Encode(plain(k)); err != nil {
+		return nil, err
+	}
+	if k.setFields["password_prompt"] && !mappingHasKey(&node, "password_prompt") {
+		appendBoolNode(&node, "password_prompt", false)
+	}
+	return &node, nil
+}
+
+func mappingKeys(node *yaml.Node, names []string) map[string]bool {
+	wanted := map[string]bool{}
+	for _, name := range names {
+		wanted[name] = false
+	}
+	found := map[string]bool{}
+	if node.Kind != yaml.MappingNode {
+		return found
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if _, ok := wanted[node.Content[i].Value]; ok {
+			found[node.Content[i].Value] = true
+		}
+	}
+	return found
+}
+
+func mappingHasKey(node *yaml.Node, name string) bool {
+	if node.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == name {
+			return true
+		}
+	}
+	return false
+}
+
+func appendBoolNode(node *yaml.Node, name string, value bool) {
+	key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name}
+	val := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: fmt.Sprintf("%t", value)}
+	node.Content = append(node.Content, key, val)
+}
+
+func mappingValue(node *yaml.Node, name string) *yaml.Node {
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == name {
+			return node.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func validateMappingNode(node *yaml.Node, typ reflect.Type) error {
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	allowed := map[string]bool{}
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if field.PkgPath != "" {
+			continue
+		}
+		name := strings.Split(field.Tag.Get("yaml"), ",")[0]
+		if name == "" {
+			name = strings.ToLower(field.Name)
+		}
+		if name != "-" {
+			allowed[name] = true
+		}
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		name := node.Content[i].Value
+		if !allowed[name] {
+			return fmt.Errorf("field %q not found in %s", name, typ.Name())
+		}
+	}
+	return nil
 }
 
 // ResolvedHost expands {{alias}}/{{host}}/... placeholders in Host without
@@ -299,10 +517,10 @@ func (c *Config) ResolveHost(alias string) (HostConfig, bool) {
 		if h.Key == "" {
 			h.Key = g.Key
 		}
-		if g.AutoDuoPush != nil && !h.AutoDuoPush {
+		if g.AutoDuoPush != nil && !h.boolWasSet("auto_duo_push", h.AutoDuoPush) {
 			h.AutoDuoPush = *g.AutoDuoPush
 		}
-		if g.AutoAcceptHostKey != nil && !h.AutoAcceptHostKey {
+		if g.AutoAcceptHostKey != nil && !h.boolWasSet("auto_accept_host_key", h.AutoAcceptHostKey) {
 			h.AutoAcceptHostKey = *g.AutoAcceptHostKey
 		}
 		if h.Password == "" {
@@ -317,10 +535,10 @@ func (c *Config) ResolveHost(alias string) (HostConfig, bool) {
 		if h.PasswordCmd == "" {
 			h.PasswordCmd = g.PasswordCmd
 		}
-		if g.PasswordPrompt != nil && !h.PasswordPrompt {
+		if g.PasswordPrompt != nil && !h.boolWasSet("password_prompt", h.PasswordPrompt) {
 			h.PasswordPrompt = *g.PasswordPrompt
 		}
-		if g.ForwardAgent != nil && !h.ForwardAgent {
+		if g.ForwardAgent != nil && !h.boolWasSet("forward_agent", h.ForwardAgent) {
 			h.ForwardAgent = *g.ForwardAgent
 		}
 		if h.ConnectTimeout == 0 {
@@ -337,7 +555,7 @@ func (c *Config) ResolveHost(alias string) (HostConfig, bool) {
 			merged = append(merged, h.SSHOptions...)
 			h.SSHOptions = merged
 		}
-		if g.SessionLog != nil && !h.SessionLog {
+		if g.SessionLog != nil && !h.boolWasSet("session_log", h.SessionLog) {
 			h.SessionLog = *g.SessionLog
 		}
 		if h.Persistent == "" {
@@ -408,7 +626,7 @@ func (c *Config) ResolveHost(alias string) (HostConfig, bool) {
 				if m.PasswordCmd == "" {
 					m.PasswordCmd = gk.PasswordCmd
 				}
-				if !m.PasswordPrompt {
+				if !m.PasswordPrompt && !m.setFields["password_prompt"] {
 					m.PasswordPrompt = gk.PasswordPrompt
 				}
 				if m.Insecure == nil {
@@ -541,6 +759,46 @@ func ExtractSSHJumpAlias(cmd string) string {
 	return ""
 }
 
+// RenameSSHJumpAlias rewrites the destination token in the common
+// `ssh [flags] <alias> -W ...` proxy_command form while preserving all other
+// spacing and arguments. Commands outside that form pass through unchanged.
+func RenameSSHJumpAlias(cmd, oldAlias, newAlias string) string {
+	type token struct {
+		start, end int
+		text       string
+	}
+	var tokens []token
+	for i := 0; i < len(cmd); {
+		for i < len(cmd) && (cmd[i] == ' ' || cmd[i] == '\t' || cmd[i] == '\r' || cmd[i] == '\n') {
+			i++
+		}
+		start := i
+		for i < len(cmd) && cmd[i] != ' ' && cmd[i] != '\t' && cmd[i] != '\r' && cmd[i] != '\n' {
+			i++
+		}
+		if start < i {
+			tokens = append(tokens, token{start: start, end: i, text: cmd[start:i]})
+		}
+	}
+	if len(tokens) < 2 || tokens[0].text != "ssh" {
+		return cmd
+	}
+	for i := 1; i < len(tokens); i++ {
+		tok := tokens[i].text
+		if strings.HasPrefix(tok, "-") {
+			if flagsTakingValue[tok] && i+1 < len(tokens) {
+				i++
+			}
+			continue
+		}
+		if tok != oldAlias {
+			return cmd
+		}
+		return cmd[:tokens[i].start] + newAlias + cmd[tokens[i].end:]
+	}
+	return cmd
+}
+
 func sortStrings(s []string) {
 	// Avoid importing sort here just for this; small enough for insertion sort.
 	for i := 1; i < len(s); i++ {
@@ -640,16 +898,42 @@ func Load() (*Config, string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &Config{Hosts: map[string]HostConfig{}}, path, nil
+			cfg := &Config{Hosts: map[string]HostConfig{}, sourcePath: path}
+			if state, ok, stateErr := loadRuntimeState(path); stateErr == nil && ok {
+				applyRuntimeState(cfg, state)
+			}
+			return cfg, path, nil
 		}
 		return nil, path, fmt.Errorf("cannot read config %s: %w", path, err)
 	}
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
+		return nil, path, fmt.Errorf("cannot parse config %s: %w", path, err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			err = fmt.Errorf("multiple YAML documents are not supported")
+		}
 		return nil, path, fmt.Errorf("cannot parse config %s: %w", path, err)
 	}
 	if cfg.Hosts == nil {
 		cfg.Hosts = map[string]HostConfig{}
+	}
+	cfg.sourcePath = path
+	cfg.sourceHash = sha256.Sum256(data)
+	cfg.hasSource = true
+	if state, ok, stateErr := loadRuntimeState(path); stateErr != nil {
+		return nil, path, stateErr
+	} else if ok {
+		applyRuntimeState(&cfg, state)
+	} else if hasRuntimeState(&cfg) {
+		// One-time migration from pre-split configs. Failure is non-fatal: the
+		// legacy history remains available in memory and config.Save never uses
+		// it to overwrite a newer runtime-state file.
+		_ = replaceRuntimeState(path, runtimeStateFromConfig(&cfg))
 	}
 	return &cfg, path, nil
 }
@@ -658,38 +942,37 @@ func Load() (*Config, string, error) {
 // missing. Before overwriting an existing config, snapshots it into
 // <dir>/backups/config.yaml.YYYYMMDD-HHMMSS and keeps the 10 most recent.
 func Save(cfg *Config, path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("cannot create config dir: %w", err)
-	}
-	_ = backupExisting(path)
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("cannot marshal config: %w", err)
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".sshmgr-config-*.yaml")
-	if err != nil {
-		return fmt.Errorf("cannot create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("cannot write config: %w", err)
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("cannot rename to %s: %w", path, err)
-	}
-	return nil
+	return withFileLock(path, func() error {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return fmt.Errorf("cannot create config dir: %w", err)
+		}
+		if current, err := os.ReadFile(path); err == nil {
+			if cfg.hasSource && cfg.sourcePath == path && sha256.Sum256(current) != cfg.sourceHash {
+				return fmt.Errorf("config changed on disk since it was loaded; reload before saving")
+			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("cannot re-read config before save: %w", err)
+		} else if cfg.hasSource && cfg.sourcePath == path {
+			return fmt.Errorf("config was removed since it was loaded; refusing to recreate a stale copy")
+		}
+
+		_ = backupExisting(path)
+		clean := *cfg
+		clean.ForwardHistory = nil
+		clean.TransferHistory = nil
+		clean.LoginHistory = nil
+		data, err := yaml.Marshal(&clean)
+		if err != nil {
+			return fmt.Errorf("cannot marshal config: %w", err)
+		}
+		if err := atomicWrite(path, data, 0o600); err != nil {
+			return err
+		}
+		cfg.sourcePath = path
+		cfg.sourceHash = sha256.Sum256(data)
+		cfg.hasSource = true
+		return nil
+	})
 }
 
 // backupExisting copies the current config (if any) into
@@ -705,7 +988,7 @@ func backupExisting(path string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	stamp := time.Now().UTC().Format("20060102-150405")
+	stamp := time.Now().UTC().Format("20060102-150405.000000000")
 	dst := filepath.Join(dir, filepath.Base(path)+"."+stamp)
 	if err := os.WriteFile(dst, data, 0o600); err != nil {
 		return err

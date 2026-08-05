@@ -9,10 +9,9 @@ import (
 	"syscall"
 	"time"
 
-	"sshmgr/internal/config"
-	exec_ "sshmgr/internal/exec"
-	"sshmgr/internal/external"
-
+	"github.com/systeampl/sshmgr/internal/config"
+	exec_ "github.com/systeampl/sshmgr/internal/exec"
+	"github.com/systeampl/sshmgr/internal/external"
 )
 
 func selectAliases(cfg *config.Config, group, tag, hosts string, all bool) []string {
@@ -23,6 +22,9 @@ func selectAliases(cfg *config.Config, group, tag, hosts string, all bool) []str
 				sel.Hosts = append(sel.Hosts, h)
 			}
 		}
+	}
+	if err := exec_.ValidateSelector(cfg, sel); err != nil {
+		fatal(err.Error())
 	}
 	aliases := exec_.Select(cfg, sel)
 	if len(aliases) == 0 {
@@ -44,26 +46,18 @@ func (m *multiFlag) Set(v string) error {
 // `playbook <file> --group g` works despite Go's flag parser stopping at the
 // first non-flag token. The first bare token is the playbook.
 func recordLogin(alias, action string) {
-	cfg, path, err := config.Load()
+	path, err := config.Path()
 	if err != nil {
 		return
 	}
-	cfg.LoginHistory = append([]config.LoginEntry{{
-		Alias:  alias,
-		Action: action,
-		When:   time.Now().UTC().Format(time.RFC3339),
-	}}, cfg.LoginHistory...)
-	if len(cfg.LoginHistory) > 500 {
-		cfg.LoginHistory = cfg.LoginHistory[:500]
-	}
-	_ = config.Save(cfg, path)
+	_ = config.RecordLogin(path, alias, action, time.Now())
 }
 
 // persistTransferLog appends a TransferEntry to the config file, capped at 200.
 // Best-effort: silently swallows save errors so a flaky write doesn't break
 // the user's transfer.
 func persistTransferLog(direction, alias, local, remote string, n int64, when time.Time) {
-	cfg, path, err := config.Load()
+	path, err := config.Path()
 	if err != nil {
 		return
 	}
@@ -75,27 +69,7 @@ func persistTransferLog(direction, alias, local, remote string, n int64, when ti
 		Bytes:     n,
 		When:      when.UTC().Format(time.RFC3339),
 	}
-	out := append([]config.TransferEntry{e}, cfg.TransferHistory...)
-	if len(out) > 200 {
-		out = out[:200]
-	}
-	cfg.TransferHistory = out
-	_ = config.Save(cfg, path)
-}
-
-func upsertForward(hist []config.ForwardEntry, e config.ForwardEntry, cap int) []config.ForwardEntry {
-	out := make([]config.ForwardEntry, 0, len(hist)+1)
-	out = append(out, e)
-	for _, h := range hist {
-		if h.Alias == e.Alias && h.Type == e.Type && h.Spec == e.Spec {
-			continue
-		}
-		out = append(out, h)
-		if len(out) >= cap {
-			break
-		}
-	}
-	return out
+	_ = config.RecordTransfer(path, e)
 }
 
 func sessionLogPath(alias string) string {
@@ -111,7 +85,23 @@ func sessionLogPath(alias string) string {
 	// Include PID so two operators on the same host within the same second
 	// don't share a log file (would interleave their sessions).
 	stamp := time.Now().Format("20060102-150405")
-	return filepath.Join(dir, fmt.Sprintf("%s-%s-%d.log", alias, stamp, os.Getpid()))
+	return filepath.Join(dir, fmt.Sprintf("%s-%s-%d.log", safeFilenameComponent(alias), stamp, os.Getpid()))
+}
+
+func safeFilenameComponent(value string) string {
+	value = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+			return r
+		default:
+			return '_'
+		}
+	}, value)
+	value = strings.Trim(value, ".")
+	if value == "" {
+		return "host"
+	}
+	return value
 }
 
 // maybeReturnToUI re-execs `sshmgr ui` when SSHMGR_FROM_UI=1 is set in the
@@ -191,4 +181,3 @@ func prompt(reader *bufio.Reader, label, def string) string {
 	}
 	return line
 }
-

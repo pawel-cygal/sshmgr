@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 )
 
 func newCfg() *config.Config {
@@ -115,6 +115,33 @@ func TestSSHConfigSkipsExisting(t *testing.T) {
 	}
 }
 
+func TestSSHConfigIncludeAndWildcardDefaults(t *testing.T) {
+	dir := t.TempDir()
+	included := filepath.Join(dir, "fleet.conf")
+	if err := os.WriteFile(included, []byte("Host web1 !web-old\n  HostName 10.0.0.1\nHost web-old\n  HostName 10.0.0.9\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dir, "config")
+	body := "Include fleet.conf\nHost web*\n  User deploy\n  Port 2222\nHost *\n  User fallback\n"
+	if err := os.WriteFile(root, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := newCfg()
+	r, err := SSHConfig(cfg, root, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(r.Added, []string{"web-old", "web1"}) {
+		t.Fatalf("included aliases: %v", r.Added)
+	}
+	if got := cfg.Hosts["web1"]; got.Host != "10.0.0.1" || got.User != "deploy" || got.Port != 2222 {
+		t.Fatalf("included host + wildcard defaults not resolved: %+v", got)
+	}
+	if got := cfg.Hosts["web-old"].User; got != "deploy" {
+		t.Fatalf("concrete web-old should receive web* defaults, got %q", got)
+	}
+}
+
 func TestAnsibleImport(t *testing.T) {
 	body := `[web]
 node1 ansible_host=10.0.0.10 ansible_user=ubuntu ansible_port=2022
@@ -140,6 +167,54 @@ ansible_port=2200
 	}
 	if g := cfg.Groups["web"]; g.User != "deploy" || g.Port != 2200 {
 		t.Errorf("group vars not folded: %+v", g)
+	}
+}
+
+func TestAnsibleMergesMembershipChildrenAndQuotedFields(t *testing.T) {
+	body := `[prod:children]
+web
+db
+
+[web]
+shared ansible_host=10.0.0.10 ansible_user="deploy user"
+
+[db]
+shared ansible_ssh_private_key_file='/keys/team key'
+db1 ansible_host=10.0.0.20
+
+[prod:vars]
+ansible_port=2200
+`
+	cfg := newCfg()
+	r, err := Ansible(cfg, writeTemp(t, "inventory.ini", body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(r.Added, []string{"db1", "shared"}) {
+		t.Fatalf("added: %v", r.Added)
+	}
+	shared := cfg.Hosts["shared"]
+	if !reflect.DeepEqual(shared.Groups, []string{"db", "prod", "web"}) {
+		t.Fatalf("merged/transitive groups: %v", shared.Groups)
+	}
+	if shared.User != "deploy user" || shared.Key != "/keys/team key" {
+		t.Fatalf("quoted/merged host vars: %+v", shared)
+	}
+	if got := cfg.Hosts["db1"].Groups; !reflect.DeepEqual(got, []string{"db", "prod"}) {
+		t.Fatalf("child parent membership: %v", got)
+	}
+}
+
+func TestAnsibleGroupVarsDoNotOverwriteExistingDefaults(t *testing.T) {
+	cfg := newCfg()
+	cfg.Groups = map[string]config.GroupDefaults{"web": {User: "keep", Port: 2022, Key: "/keep/key"}}
+	body := "[web:vars]\nansible_user=replace\nansible_port=2200\nansible_private_key_file=/replace/key\n"
+	if _, err := Ansible(cfg, writeTemp(t, "inventory.ini", body)); err != nil {
+		t.Fatal(err)
+	}
+	g := cfg.Groups["web"]
+	if g.User != "keep" || g.Port != 2022 || g.Key != "/keep/key" {
+		t.Fatalf("pre-existing group defaults overwritten: %+v", g)
 	}
 }
 

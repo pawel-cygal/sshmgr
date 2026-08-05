@@ -3,6 +3,7 @@ package sshc
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -17,9 +18,9 @@ import (
 	"syscall"
 	"time"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/fwd"
-	"sshmgr/internal/secret"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/fwd"
+	"github.com/systeampl/sshmgr/internal/secret"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -122,12 +123,22 @@ func connectChain(cfg *config.Config, alias string, visited map[string]bool) ([]
 }
 
 func dialDirect(h config.HostConfig) (*ssh.Client, error) {
-	sshConfig, err := clientConfigFor(h)
+	sshConfig, cleanupAuth, err := clientConfigFor(h)
 	if err != nil {
 		return nil, err
 	}
+	defer cleanupAuth()
 	addr := net.JoinHostPort(h.Host, fmt.Sprintf("%d", h.Port))
-	return ssh.Dial("tcp", addr, sshConfig)
+	timeout := connectTimeout(h)
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return nil, err
+	}
+	sshConn, chans, reqs, err := newClientConnTimeout(conn, addr, sshConfig, timeout)
+	if err != nil {
+		return nil, err
+	}
+	return ssh.NewClient(sshConn, chans, reqs), nil
 }
 
 // dialViaProxyCommand executes the proxy_command (with %h/%p substituted)
@@ -151,13 +162,14 @@ func dialViaProxyCommand(h config.HostConfig) (*ssh.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	sshConfig, err := clientConfigFor(h)
+	sshConfig, cleanupAuth, err := clientConfigFor(h)
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
+	defer cleanupAuth()
 	statusf("[sshmgr] SSH handshake on tunnel -> %s (user=%s)\n", addr, h.User)
-	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, sshConfig)
+	sshConn, chans, reqs, err := newClientConnTimeout(conn, addr, sshConfig, connectTimeout(h))
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("ssh handshake via proxy_command: %w", err)
@@ -182,16 +194,20 @@ func statusf(format string, args ...any) {
 
 func dialThroughJump(jump *ssh.Client, h config.HostConfig) (*ssh.Client, error) {
 	addr := net.JoinHostPort(h.Host, fmt.Sprintf("%d", h.Port))
-	conn, err := jump.Dial("tcp", addr)
+	timeout := connectTimeout(h)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	conn, err := jump.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("tcp dial via jump: %w", err)
 	}
-	sshConfig, err := clientConfigFor(h)
+	sshConfig, cleanupAuth, err := clientConfigFor(h)
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
-	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, sshConfig)
+	defer cleanupAuth()
+	sshConn, chans, reqs, err := newClientConnTimeout(conn, addr, sshConfig, timeout)
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("ssh handshake via jump: %w", err)
@@ -199,25 +215,60 @@ func dialThroughJump(jump *ssh.Client, h config.HostConfig) (*ssh.Client, error)
 	return ssh.NewClient(sshConn, chans, reqs), nil
 }
 
-func clientConfigFor(h config.HostConfig) (*ssh.ClientConfig, error) {
-	auths, err := authMethods(h)
+func clientConfigFor(h config.HostConfig) (*ssh.ClientConfig, func(), error) {
+	auths, cleanupAuth, err := authMethods(h)
 	if err != nil {
-		return nil, err
+		return nil, func() {}, err
 	}
 	hk, err := hostKeyCallback(h.AutoAcceptHostKey)
 	if err != nil {
-		return nil, err
+		cleanupAuth()
+		return nil, func() {}, err
 	}
-	timeout := 30 * time.Second
-	if h.ConnectTimeout > 0 {
-		timeout = time.Duration(h.ConnectTimeout) * time.Second
-	}
+	timeout := connectTimeout(h)
 	return &ssh.ClientConfig{
 		User:            h.User,
 		Auth:            auths,
 		HostKeyCallback: hk,
 		Timeout:         timeout,
-	}, nil
+	}, cleanupAuth, nil
+}
+
+func connectTimeout(h config.HostConfig) time.Duration {
+	if h.ConnectTimeout > 0 {
+		return time.Duration(h.ConnectTimeout) * time.Second
+	}
+	return 30 * time.Second
+}
+
+type clientConnResult struct {
+	conn  ssh.Conn
+	chans <-chan ssh.NewChannel
+	reqs  <-chan *ssh.Request
+	err   error
+}
+
+// newClientConnTimeout bounds the SSH handshake for transports where
+// ssh.ClientConfig.Timeout is otherwise ignored (jump channels and
+// proxy_command pipes). Closing raw on timeout unblocks the handshake goroutine.
+func newClientConnTimeout(raw net.Conn, addr string, cfg *ssh.ClientConfig, timeout time.Duration) (ssh.Conn, <-chan ssh.NewChannel, <-chan *ssh.Request, error) {
+	done := make(chan clientConnResult, 1)
+	go func() {
+		conn, chans, reqs, err := ssh.NewClientConn(raw, addr, cfg)
+		done <- clientConnResult{conn: conn, chans: chans, reqs: reqs, err: err}
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case result := <-done:
+		if result.err != nil {
+			_ = raw.Close()
+		}
+		return result.conn, result.chans, result.reqs, result.err
+	case <-timer.C:
+		_ = raw.Close()
+		return nil, nil, nil, fmt.Errorf("SSH handshake with %s timed out after %s", addr, timeout)
+	}
 }
 
 var (
@@ -248,43 +299,107 @@ func CloseChain(target *ssh.Client) {
 	}
 }
 
-func authMethods(h config.HostConfig) ([]ssh.AuthMethod, error) {
+// authMethods builds the authentication order and returns a cleanup function
+// for any local ssh-agent connection it opens. The agent socket must remain
+// open until the SSH handshake has completed because agent-backed signers call
+// back through it while signing the authentication request.
+func authMethods(h config.HostConfig) ([]ssh.AuthMethod, func(), error) {
 	var methods []ssh.AuthMethod
+	noCleanup := func() {}
 
 	// KeyOnly: exactly the configured key, no fallback. Used by key-rotation
 	// verification — the new key must succeed entirely on its own.
 	if h.KeyOnly {
 		if h.Key == "" {
-			return nil, errors.New("key_only verification requires a key")
+			return nil, noCleanup, errors.New("key_only verification requires a key")
 		}
 		keyPath := config.ExpandPath(h.Key)
 		keyBytes, err := os.ReadFile(keyPath)
 		if err != nil {
-			return nil, fmt.Errorf("cannot read SSH key %s: %w", keyPath, err)
+			return nil, noCleanup, fmt.Errorf("cannot read SSH key %s: %w", keyPath, err)
 		}
 		signer, err := ssh.ParsePrivateKey(keyBytes)
-		if err != nil {
-			return nil, fmt.Errorf("cannot parse SSH key %s: %w", keyPath, err)
+		if err == nil {
+			return []ssh.AuthMethod{ssh.PublicKeys(signer)}, noCleanup, nil
 		}
-		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
+		var missing *ssh.PassphraseMissingError
+		if !errors.As(err, &missing) {
+			return nil, noCleanup, fmt.Errorf("cannot parse SSH key %s: %w", keyPath, err)
+		}
+		// Encrypted rotation keys remain key-only by selecting the matching
+		// signer from ssh-agent using the public .pub sidecar. Other agent keys
+		// are never offered, preserving the rotation verification contract.
+		pub, err := readPublicKeySidecar(keyPath)
+		if err != nil {
+			return nil, noCleanup, fmt.Errorf("encrypted key-only identity %s: %w", keyPath, err)
+		}
+		sock := os.Getenv("SSH_AUTH_SOCK")
+		if sock == "" {
+			return nil, noCleanup, fmt.Errorf("SSH key %s is encrypted; start ssh-agent and run ssh-add %s", keyPath, keyPath)
+		}
+		conn, err := net.DialTimeout("unix", sock, 2*time.Second)
+		if err != nil {
+			return nil, noCleanup, fmt.Errorf("dial ssh-agent for encrypted key %s: %w", keyPath, err)
+		}
+		agentSigners, err := agent.NewClient(conn).Signers()
+		if err != nil {
+			_ = conn.Close()
+			return nil, noCleanup, fmt.Errorf("list ssh-agent identities: %w", err)
+		}
+		for _, candidate := range agentSigners {
+			if bytes.Equal(candidate.PublicKey().Marshal(), pub.Marshal()) {
+				var once sync.Once
+				cleanup := func() { once.Do(func() { _ = conn.Close() }) }
+				return []ssh.AuthMethod{ssh.PublicKeys(candidate)}, cleanup, nil
+			}
+		}
+		_ = conn.Close()
+		return nil, noCleanup, fmt.Errorf("encrypted key %s is not loaded in ssh-agent (run ssh-add %s)", keyPath, keyPath)
 	}
 
+	var encryptedKeyPath string
 	if h.Key != "" {
 		keyPath := config.ExpandPath(h.Key)
 		keyBytes, err := os.ReadFile(keyPath)
+		if err != nil {
+			return nil, noCleanup, fmt.Errorf("cannot read SSH key %s: %w", keyPath, err)
+		}
+		signer, err := ssh.ParsePrivateKey(keyBytes)
 		if err == nil {
-			signer, err := ssh.ParsePrivateKey(keyBytes)
-			if err != nil {
-				return nil, fmt.Errorf("cannot parse SSH key %s: %w", keyPath, err)
-			}
 			methods = append(methods, ssh.PublicKeys(signer))
-		} else if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("cannot read SSH key %s: %w", keyPath, err)
+		} else {
+			var missing *ssh.PassphraseMissingError
+			if !errors.As(err, &missing) {
+				return nil, noCleanup, fmt.Errorf("cannot parse SSH key %s: %w", keyPath, err)
+			}
+			// Encrypted private keys are normally unlocked by ssh-add. Keep the
+			// configured identity in the error context, then try the local agent.
+			encryptedKeyPath = keyPath
 		}
 	}
 
 	hasPassword := h.Password != "" || h.PasswordEnv != "" ||
 		h.PasswordKeyring != "" || h.PasswordCmd != "" || h.PasswordPrompt
+
+	var agentConn net.Conn
+	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
+		conn, err := net.DialTimeout("unix", sock, 2*time.Second)
+		if err == nil {
+			agentConn = conn
+			methods = append(methods, ssh.PublicKeysCallback(agent.NewClient(conn).Signers))
+		} else if encryptedKeyPath != "" && !hasPassword {
+			return nil, noCleanup, fmt.Errorf("SSH key %s is encrypted and ssh-agent at %s is unavailable: %w (run ssh-add %s)",
+				encryptedKeyPath, sock, err, encryptedKeyPath)
+		}
+	} else if encryptedKeyPath != "" && !hasPassword {
+		return nil, noCleanup, fmt.Errorf("SSH key %s is encrypted; start ssh-agent and run ssh-add %s, or configure a password backend",
+			encryptedKeyPath, encryptedKeyPath)
+	}
+	cleanup := noCleanup
+	if agentConn != nil {
+		var once sync.Once
+		cleanup = func() { once.Do(func() { _ = agentConn.Close() }) }
+	}
 
 	if hasPassword {
 		methods = append(methods, ssh.PasswordCallback(func() (string, error) {
@@ -300,7 +415,20 @@ func authMethods(h config.HostConfig) ([]ssh.AuthMethod, error) {
 	if h.AutoDuoPush || !hasPassword {
 		methods = append(methods, ssh.KeyboardInteractive(keyboardInteractiveFn(h)))
 	}
-	return methods, nil
+	return methods, cleanup, nil
+}
+
+func readPublicKeySidecar(privatePath string) (ssh.PublicKey, error) {
+	path := privatePath + ".pub"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read public key sidecar %s: %w", path, err)
+	}
+	pub, _, _, _, err := ssh.ParseAuthorizedKey(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse public key sidecar %s: %w", path, err)
+	}
+	return pub, nil
 }
 
 func keyboardInteractiveFn(h config.HostConfig) ssh.KeyboardInteractiveChallenge {
@@ -417,6 +545,9 @@ func hostKeyCallback(autoAccept bool) (ssh.HostKeyCallback, error) {
 }
 
 func knownHostsPath() (string, error) {
+	if path := os.Getenv("SSHMGR_KNOWN_HOSTS"); path != "" {
+		return config.ExpandPath(path), nil
+	}
 	usr, err := user.Current()
 	if err != nil {
 		return "", err
@@ -663,6 +794,20 @@ func InteractiveShell(client *ssh.Client, h config.HostConfig, steps []config.Lo
 		}
 	}
 
+	// Start exactly one stdout reader for the lifetime of the shell. Both the
+	// optional automatic chain and later in-session escalation observe prompts
+	// through this inspector; no abandoned goroutine can steal shell output.
+	var termOut io.Writer = os.Stdout
+	var errOut io.Writer = os.Stderr
+	if logFile != nil {
+		logW := &lockedWriter{w: logFile}
+		termOut = io.MultiWriter(os.Stdout, logW)
+		errOut = io.MultiWriter(os.Stderr, logW)
+	}
+	insp := newExpectInspector(termOut)
+	go io.Copy(insp, stdoutPipe)
+	go io.Copy(errOut, stderrPipe)
+
 	// Run login chain BEFORE switching to raw mode — output still gets mirrored
 	// to the user's terminal so they see what's happening. Skipped when
 	// login_steps_auto is false: the chain is then available only via the
@@ -671,7 +816,7 @@ func InteractiveShell(client *ssh.Client, h config.HostConfig, steps []config.Lo
 	autoRun := h.LoginStepsAuto == nil || *h.LoginStepsAuto
 	if len(steps) > 0 && autoRun {
 		statusf("[sshmgr] running %d login step(s)...\n", len(steps))
-		if err := runLoginChain(steps, h, stdoutPipe, stdinPipe); err != nil {
+		if err := runLoginChain(steps, h, stdinPipe, insp); err != nil {
 			return fmt.Errorf("login chain: %w", err)
 		}
 		statusf("[sshmgr] login chain complete, dropping to shell.\n")
@@ -686,21 +831,6 @@ func InteractiveShell(client *ssh.Client, h config.HostConfig, steps []config.Lo
 		}
 		defer term.Restore(fd, oldState)
 	}
-
-	// Pump server output to our terminal through an expect-inspector so the
-	// in-session `~r` escalation hotkey can wait for prompts without taking the
-	// stream away from the live shell. stdout/stderr share a mutex-guarded log
-	// writer so audit logs don't tear at the page boundary.
-	var termOut io.Writer = os.Stdout
-	var errOut io.Writer = os.Stderr
-	if logFile != nil {
-		logW := &lockedWriter{w: logFile}
-		termOut = io.MultiWriter(os.Stdout, logW)
-		errOut = io.MultiWriter(os.Stderr, logW)
-	}
-	insp := newExpectInspector(termOut)
-	go io.Copy(insp, stdoutPipe)
-	go io.Copy(errOut, stderrPipe)
 
 	// Pump local stdin → remote through the escape scanner, which intercepts the
 	// `~r` escalation hotkey (recognised at line start) and runs the host's
@@ -730,102 +860,23 @@ func InteractiveShell(client *ssh.Client, h config.HostConfig, steps []config.Lo
 	return err
 }
 
-// runLoginChain executes step.Command + waits for step.Expect + sends response
-// for each step in order. Output is mirrored to os.Stdout so the user can see
-// each prompt and answer. Passwords are resolved from $PasswordEnv or literal
-// Response.
-func runLoginChain(steps []config.LoginStep, h config.HostConfig, stdout io.Reader, stdin io.Writer) error {
-	type readResult struct {
-		buf []byte
-		err error
-	}
-	// Reads run in a goroutine so the per-step deadline can actually fire —
-	// otherwise a naked stdout.Read() blocks forever if the server stops
-	// sending bytes, hanging the whole interactive shell.
-	reads := make(chan readResult, 1)
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := stdout.Read(buf)
-			chunk := make([]byte, n)
-			copy(chunk, buf[:n])
-			select {
-			case reads <- readResult{chunk, err}:
-			case <-done:
-				return
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	acc := make([]byte, 0, 4096)
-	for i, step := range steps {
-		if step.Command == "" {
-			return fmt.Errorf("step %d: empty command", i+1)
-		}
-		if _, err := fmt.Fprintf(stdin, "%s\n", step.Command); err != nil {
-			return fmt.Errorf("step %d (%q): write command: %w", i+1, step.Command, err)
-		}
-		statusf("[sshmgr] step %d: %s\n", i+1, step.Command)
-		acc = acc[:0]
-
-		if step.Expect == "" {
-			continue
-		}
-
-		timeoutMS := step.TimeoutMS
-		if timeoutMS <= 0 {
-			timeoutMS = 30000
-		}
-		timer := time.NewTimer(time.Duration(timeoutMS) * time.Millisecond)
-		matched := false
-	WaitLoop:
-		for !matched {
-			select {
-			case r := <-reads:
-				if len(r.buf) > 0 {
-					_, _ = os.Stdout.Write(r.buf)
-					acc = append(acc, r.buf...)
-					if bytes.Contains(acc, []byte(step.Expect)) {
-						matched = true
-						break WaitLoop
-					}
-				}
-				if r.err != nil {
-					timer.Stop()
-					return fmt.Errorf("step %d (%q): read: %w", i+1, step.Command, r.err)
-				}
-			case <-timer.C:
-				return fmt.Errorf("step %d (%q): timeout waiting for %q after %dms", i+1, step.Command, step.Expect, timeoutMS)
-			}
-		}
-		timer.Stop()
-
-		response, err := secret.Resolve(step, h)
-		if err != nil {
-			return fmt.Errorf("step %d (%q): %w", i+1, step.Command, err)
-		}
-		if _, err := fmt.Fprintf(stdin, "%s\n", response); err != nil {
-			return fmt.Errorf("step %d (%q): write response: %w", i+1, step.Command, err)
-		}
-	}
-	return nil
+// runLoginChain uses the shell's single output inspector. idle=0 disables the
+// manual mode's passwordless-sudo heuristic: automatic mode requires the
+// configured prompt or a hard timeout and never advances on mere silence.
+func runLoginChain(steps []config.LoginStep, h config.HostConfig, stdin io.Writer, insp *expectInspector) error {
+	return runEscalation(steps, h, stdin, insp, 0, nil)
 }
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-// VerifyKey opens a fresh connection to alias — through its normal proxy
-// chain — authenticating the final hop with ONLY keyPath (no password, no
-// keyboard-interactive, no fallback to the old key). It runs `true` and
-// returns nil only if that succeeds. This is the safety gate for key
-// rotation: never remove an old key unless VerifyKey confirms the new one.
-func VerifyKey(cfg *config.Config, alias, keyPath string) error {
+// ConnectAliasWithKey opens a fresh connection to alias through its normal
+// proxy chain, but authenticates the final hop with ONLY keyPath. Jump hosts
+// keep their normal credentials. Rotation uses this both for verification and
+// for the destructive old-key removal step, so it never falls back to the key
+// it is about to remove.
+func ConnectAliasWithKey(cfg *config.Config, alias, keyPath string) (*ssh.Client, error) {
 	// Shallow-clone the config and swap the target host's auth to key-only.
 	// Proxy/jump hosts keep their normal credentials so the tunnel still works.
 	clone := *cfg
@@ -840,8 +891,13 @@ func VerifyKey(cfg *config.Config, alias, keyPath string) error {
 	h.PasswordPrompt = false
 	h.AutoDuoPush = false
 	clone.Hosts[alias] = h
+	return ConnectAlias(&clone, alias)
+}
 
-	client, err := ConnectAlias(&clone, alias)
+// VerifyKey opens a fresh key-only connection and runs `true`. This is the
+// safety gate for key rotation: never remove an old key unless this succeeds.
+func VerifyKey(cfg *config.Config, alias, keyPath string) error {
+	client, err := ConnectAliasWithKey(cfg, alias, keyPath)
 	if err != nil {
 		return err
 	}
@@ -905,11 +961,10 @@ func setupAgentForward(client *ssh.Client, session *ssh.Session) error {
 	if sock == "" {
 		return errors.New("SSH_AUTH_SOCK is empty — start ssh-agent first")
 	}
-	conn, err := net.Dial("unix", sock)
-	if err != nil {
-		return fmt.Errorf("dial ssh-agent: %w", err)
-	}
-	if err := agent.ForwardToAgent(client, agent.NewClient(conn)); err != nil {
+	// ForwardToRemote opens a fresh local socket for each remote agent
+	// channel. Keeping one agent.Client around for the whole SSH session would
+	// leak its Unix connection after the session closes.
+	if err := agent.ForwardToRemote(client, sock); err != nil {
 		return err
 	}
 	if err := agent.RequestAgentForwarding(session); err != nil {

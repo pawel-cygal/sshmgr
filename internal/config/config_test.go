@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"os/user"
 	"path/filepath"
 	"reflect"
@@ -13,6 +14,73 @@ func TestResolveHostUnknownAlias(t *testing.T) {
 	c := &Config{Hosts: map[string]HostConfig{}}
 	if h, ok := c.ResolveHost("nope"); ok || !reflect.DeepEqual(h, HostConfig{}) {
 		t.Fatalf("unknown alias: got (%+v, %v), want (zero, false)", h, ok)
+	}
+}
+
+func TestResolveHostExplicitFalseOverridesGroupTrueAndRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	t.Setenv("SSHMGR_CONFIG", path)
+	t.Setenv("SSHMGR_STATE", filepath.Join(dir, "state.yaml"))
+	body := []byte("groups:\n  inherited:\n    auto_duo_push: true\n    forward_agent: true\n    session_log: true\nhosts:\n  a:\n    host: example\n    groups: [inherited]\n    auto_duo_push: false\n    forward_agent: false\n    session_log: false\n")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := cfg.ResolveHost("a")
+	if h.AutoDuoPush || h.ForwardAgent || h.SessionLog {
+		t.Fatalf("explicit false did not override group true: %+v", h)
+	}
+	if err := Save(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	roundTrip, _, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ = roundTrip.ResolveHost("a")
+	if h.AutoDuoPush || h.ForwardAgent || h.SessionLog {
+		t.Fatalf("explicit false was lost after save: %+v", h)
+	}
+}
+
+func TestCloneDoesNotAliasNestedDeclarativeState(t *testing.T) {
+	falseValue := false
+	original := &Config{
+		Hosts: map[string]HostConfig{
+			"a": {Host: "one", Groups: []string{"g"}, Snippets: []Snippet{{Name: "s", Tags: []string{"old"}}}, KVM: &KVMConfig{Host: "kvm", Insecure: &falseValue}},
+		},
+		Groups:   map[string]GroupDefaults{"g": {Tags: []string{"old"}}},
+		Forwards: map[string]ForwardProfile{"f": {Alias: "a"}},
+	}
+	clone := original.Clone()
+	h := clone.Hosts["a"]
+	h.Groups[0] = "changed"
+	h.Snippets[0].Tags[0] = "changed"
+	h.KVM.Host = "changed"
+	clone.Hosts["a"] = h
+	g := clone.Groups["g"]
+	g.Tags[0] = "changed"
+	clone.Groups["g"] = g
+	if got := original.Hosts["a"]; got.Groups[0] != "g" || got.Snippets[0].Tags[0] != "old" || got.KVM.Host != "kvm" {
+		t.Fatalf("host clone mutated source: %+v", got)
+	}
+	if original.Groups["g"].Tags[0] != "old" {
+		t.Fatalf("group clone mutated source: %+v", original.Groups["g"])
+	}
+}
+
+func TestRenameSSHJumpAliasPreservesOtherArguments(t *testing.T) {
+	in := "ssh  -i /keys/old  old-jump -W %h:%p"
+	want := "ssh  -i /keys/old  new-jump -W %h:%p"
+	if got := RenameSSHJumpAlias(in, "old-jump", "new-jump"); got != want {
+		t.Fatalf("renamed proxy command: got %q want %q", got, want)
+	}
+	if got := RenameSSHJumpAlias("nc %h %p", "old", "new"); got != "nc %h %p" {
+		t.Fatalf("non-ssh proxy command changed: %q", got)
 	}
 }
 
@@ -402,5 +470,27 @@ func TestResolveHostEscalateKeyInheritedFromGroup(t *testing.T) {
 	h, _ := c.ResolveHost("a")
 	if h.EscalateKey != "~" {
 		t.Fatalf("group escalate_key should propagate, got %q", h.EscalateKey)
+	}
+}
+
+func TestHostConfigRedactedDoesNotMutateSource(t *testing.T) {
+	original := HostConfig{
+		Password:    "host-secret",
+		PasswordCmd: "vault read token=secret",
+		LoginSteps:  []LoginStep{{Command: "sudo -s", Response: "step-secret", PasswordCmd: "get-step"}},
+		KVM:         &KVMConfig{Host: "kvm", Password: "kvm-secret", PasswordCmd: "get-kvm"},
+	}
+	got := original.Redacted()
+	if got.Password != "[redacted]" || got.PasswordCmd != "[redacted]" {
+		t.Fatalf("host secrets were not redacted: %+v", got)
+	}
+	if got.LoginSteps[0].Response != "[redacted]" || got.LoginSteps[0].PasswordCmd != "[redacted]" {
+		t.Fatalf("login-step secrets were not redacted: %+v", got.LoginSteps[0])
+	}
+	if got.KVM.Password != "[redacted]" || got.KVM.PasswordCmd != "[redacted]" {
+		t.Fatalf("kvm secrets were not redacted: %+v", got.KVM)
+	}
+	if original.Password != "host-secret" || original.LoginSteps[0].Response != "step-secret" || original.KVM.Password != "kvm-secret" {
+		t.Fatal("Redacted mutated the source config")
 	}
 }

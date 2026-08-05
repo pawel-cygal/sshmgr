@@ -9,10 +9,10 @@ import (
 	"syscall"
 	"time"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/external"
-	"sshmgr/internal/sshc"
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/external"
+	"github.com/systeampl/sshmgr/internal/sshc"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"golang.org/x/crypto/ssh"
 )

@@ -8,8 +8,8 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
-	"sshmgr/internal/kvm"
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/kvm"
+	"github.com/systeampl/sshmgr/internal/theme"
 )
 
 // openKVMMenu shows the out-of-band power actions for a host's KVM. web opens

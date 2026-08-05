@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"

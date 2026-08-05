@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 
 	"gopkg.in/yaml.v3"
 )

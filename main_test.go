@@ -1,12 +1,15 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/external"
-	"sshmgr/internal/snippets"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/external"
+	"github.com/systeampl/sshmgr/internal/snippets"
 )
 
 func TestExternalSnippetCommandArgv(t *testing.T) {
@@ -123,5 +126,53 @@ func TestHasFwdDirectFlag(t *testing.T) {
 		if got := hasFwdDirectFlag(c.args); got != c.want {
 			t.Errorf("%s: got %v, want %v (args=%v)", c.name, got, c.want, c.args)
 		}
+	}
+}
+
+func TestSafeFilenameComponent(t *testing.T) {
+	for input, want := range map[string]string{
+		"web-01.example": "web-01.example",
+		"../../escape":   "_.._escape",
+		"host/name":      "host_name",
+		"...":            "host",
+	} {
+		if got := safeFilenameComponent(input); got != want {
+			t.Errorf("safeFilenameComponent(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestOpenDetachedLogNeverReusesAName(t *testing.T) {
+	now := time.Date(2026, 8, 5, 12, 0, 0, 123, time.UTC)
+	p1, f1, err := openDetachedLog(t.TempDir(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(p1)
+	_ = f1.Close()
+	p2, f2, err := openDetachedLog(dir, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f2.Close()
+	if p1 == p2 {
+		t.Fatalf("detached logs collided: %s", p1)
+	}
+	if st, err := os.Stat(p2); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("log permissions: stat=%v err=%v", st, err)
+	}
+}
+
+func TestSplitEditorCommand(t *testing.T) {
+	got, err := splitEditorCommand(`code --wait --reuse-window "profile one"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"code", "--wait", "--reuse-window", "profile one"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("editor argv: got %v want %v", got, want)
+	}
+	if _, err := splitEditorCommand(`code "unterminated`); err == nil {
+		t.Fatal("unterminated editor quote accepted")
 	}
 }

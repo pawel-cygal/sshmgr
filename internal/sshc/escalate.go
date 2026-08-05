@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/secret"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/secret"
 )
 
 // escalate.go implements the in-session, on-demand privilege-escalation hotkey.
@@ -71,6 +71,7 @@ type expectInspector struct {
 	armed        bool
 	pattern      []byte
 	acc          []byte
+	tail         []byte
 	found        chan struct{}
 	sawOutput    bool
 	lastActivity time.Time
@@ -87,9 +88,23 @@ func (e *expectInspector) Write(p []byte) (int, error) {
 		e.sawOutput = true
 		e.lastActivity = time.Now()
 		e.acc = append(e.acc, p[:n]...)
+		e.tail = append(e.tail, p[:n]...)
+		if len(e.tail) > 4096 {
+			e.tail = append(e.tail[:0], e.tail[len(e.tail)-4096:]...)
+		}
 		if bytes.Contains(e.acc, e.pattern) {
 			e.armed = false
 			close(e.found)
+		} else {
+			// Only the final len(pattern)-1 bytes can participate in a match
+			// spanning the next Write. Bound memory even if a noisy command never
+			// emits the configured prompt.
+			keep := len(e.pattern) - 1
+			if keep <= 0 {
+				e.acc = e.acc[:0]
+			} else if len(e.acc) > keep {
+				e.acc = append(e.acc[:0], e.acc[len(e.acc)-keep:]...)
+			}
 		}
 	}
 	e.mu.Unlock()
@@ -103,6 +118,7 @@ func (e *expectInspector) arm(pattern string) {
 	e.armed = true
 	e.pattern = []byte(pattern)
 	e.acc = e.acc[:0]
+	e.tail = e.tail[:0]
 	e.found = make(chan struct{})
 	e.sawOutput = false
 	e.lastActivity = time.Now()
@@ -116,8 +132,8 @@ func (e *expectInspector) disarm() {
 }
 
 // wait blocks until the armed pattern appears (returns true), the output goes
-// idle after the command produced some text without the pattern (returns false —
-// the command finished without prompting, e.g. cached sudo or passwordless), or
+// idle after the command produced a conventional shell prompt without the
+// pattern (returns false — cached sudo/passwordless already completed), or
 // the hard timeout elapses with no output at all (returns an error). The idle
 // path is what stops a re-escalation from hanging when `sudo` has cached creds
 // and never reprints its password prompt.
@@ -129,8 +145,13 @@ func (e *expectInspector) wait(timeout, idle time.Duration) (bool, error) {
 
 	hard := time.NewTimer(timeout)
 	defer hard.Stop()
-	tick := time.NewTicker(idle / 2)
-	defer tick.Stop()
+	var idleC <-chan time.Time
+	var tick *time.Ticker
+	if idle > 0 {
+		tick = time.NewTicker(idle / 2)
+		idleC = tick.C
+		defer tick.Stop()
+	}
 
 	for {
 		select {
@@ -139,17 +160,36 @@ func (e *expectInspector) wait(timeout, idle time.Duration) (bool, error) {
 		case <-hard.C:
 			e.disarm()
 			return false, fmt.Errorf("timeout waiting for %q after %s", pat, timeout)
-		case <-tick.C:
+		case <-idleC:
 			e.mu.Lock()
 			stillArmed := e.armed
 			idleNow := e.sawOutput && time.Since(e.lastActivity) >= idle
+			atPrompt := looksLikeShellPrompt(e.tail)
 			e.mu.Unlock()
-			if stillArmed && idleNow {
+			if stillArmed && idleNow && atPrompt {
 				e.disarm()
 				return false, nil
 			}
 		}
 	}
+}
+
+// looksLikeShellPrompt is deliberately conservative. Silence after arbitrary
+// banner text is not proof that sudo succeeded; only a final conventional
+// shell prompt lets the optional-prompt path continue. Custom prompts simply
+// hit the configured hard timeout, which is safer than injecting the next
+// command into an unresolved password/MFA prompt.
+func looksLikeShellPrompt(tail []byte) bool {
+	line := tail
+	if i := bytes.LastIndexAny(line, "\r\n"); i >= 0 {
+		line = line[i+1:]
+	}
+	line = bytes.TrimRight(line, " \t")
+	if len(line) == 0 {
+		return false
+	}
+	last := line[len(line)-1]
+	return last == '#' || last == '$'
 }
 
 // escalationIdle is how long the runner waits for a step's password prompt to
@@ -207,6 +247,14 @@ func runEscalation(steps []config.LoginStep, h config.HostConfig, w io.Writer, i
 		if step.Command == "" {
 			return fmt.Errorf("step %d: empty command", i+1)
 		}
+		var password string
+		if step.Expect != "" {
+			var err error
+			password, err = secret.Resolve(step, h)
+			if err != nil {
+				return fmt.Errorf("step %d (%q): resolve response before sending command: %w", i+1, step.Command, err)
+			}
+		}
 		if status != nil {
 			status("escalating: " + step.Command)
 		}
@@ -235,11 +283,7 @@ func runEscalation(steps []config.LoginStep, h config.HostConfig, w io.Writer, i
 			}
 			continue
 		}
-		pw, err := secret.Resolve(step, h)
-		if err != nil {
-			return fmt.Errorf("step %d (%q): %w", i+1, step.Command, err)
-		}
-		if _, err := fmt.Fprintf(w, "%s\n", pw); err != nil {
+		if _, err := fmt.Fprintf(w, "%s\n", password); err != nil {
 			return fmt.Errorf("step %d (%q): write password: %w", i+1, step.Command, err)
 		}
 	}

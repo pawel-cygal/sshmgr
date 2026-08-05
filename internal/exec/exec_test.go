@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 )
 
 func selectCfg() *config.Config {
@@ -53,6 +54,22 @@ func TestSelectExplicitHosts(t *testing.T) {
 	got := Select(selectCfg(), Selector{Hosts: []string{"d", "a"}})
 	if !reflect.DeepEqual(got, []string{"a", "d"}) {
 		t.Fatalf("explicit hosts (should be sorted): got %v", got)
+	}
+}
+
+func TestValidateSelectorRejectsAmbiguousAndUnknownHosts(t *testing.T) {
+	cfg := selectCfg()
+	if err := ValidateSelector(cfg, Selector{All: true, Hosts: []string{"a"}}); err == nil {
+		t.Fatal("--all plus --host must be rejected")
+	}
+	if err := ValidateSelector(cfg, Selector{Group: "web", Tag: "prod"}); err == nil {
+		t.Fatal("--group plus --tag must be rejected")
+	}
+	if err := ValidateSelector(cfg, Selector{Hosts: []string{"a", "missing"}}); err == nil {
+		t.Fatal("an explicit unknown alias must be rejected")
+	}
+	if err := ValidateSelector(cfg, Selector{All: true}); err != nil {
+		t.Fatalf("valid --all rejected: %v", err)
 	}
 }
 
@@ -270,5 +287,19 @@ func TestAnyFailed(t *testing.T) {
 	}
 	if AnyFailed(nil) {
 		t.Error("no results means no failure")
+	}
+}
+
+func TestCappedBufferConsumesAllInputButBoundsCapture(t *testing.T) {
+	b := newCappedBuffer(5)
+	if n, err := b.Write([]byte("abcdefgh")); err != nil || n != 8 {
+		t.Fatalf("Write = %d, %v", n, err)
+	}
+	if n, err := b.Write([]byte("more")); err != nil || n != 4 {
+		t.Fatalf("second Write = %d, %v", n, err)
+	}
+	got := b.String()
+	if !strings.HasPrefix(got, "abcde") || !strings.Contains(got, "truncated after 5 bytes") {
+		t.Fatalf("capped output: %q", got)
 	}
 }

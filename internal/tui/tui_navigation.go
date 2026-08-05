@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -227,11 +227,13 @@ func (s *uiState) togglePin(alias string) {
 		return
 	}
 	h.Pinned = !h.Pinned
-	s.cfg.Hosts[alias] = h
-	if err := config.Save(s.cfg, s.configPath); err != nil {
+	next := s.cfg.Clone()
+	next.Hosts[alias] = h
+	if err := config.Save(next, s.configPath); err != nil {
 		s.modal("save failed: "+err.Error(), nil)
 		return
 	}
+	s.cfg = next
 	s.refresh(alias)
 }
 

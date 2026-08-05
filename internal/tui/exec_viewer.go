@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"sshmgr/internal/exec"
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/exec"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -54,7 +54,7 @@ func ShowHostResults(title string, results []exec.Result) ExecChoice {
 		SetWrap(false).
 		SetScrollable(true)
 	tv.SetBorder(true).
-		SetTitle(" " + title + " ").
+		SetTitle(" "+title+" ").
 		SetTitleAlign(tview.AlignLeft).
 		SetBorderColor(theme.Current.Primary).
 		SetTitleColor(theme.Current.Primary).

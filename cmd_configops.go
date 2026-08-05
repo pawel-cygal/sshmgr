@@ -7,20 +7,22 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 
-	"sshmgr/internal/completion"
-	"sshmgr/internal/config"
-	exec_ "sshmgr/internal/exec"
-	"sshmgr/internal/importer"
-	"sshmgr/internal/lint"
-	"sshmgr/internal/rotate"
-	"sshmgr/internal/secret"
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/completion"
+	"github.com/systeampl/sshmgr/internal/config"
+	exec_ "github.com/systeampl/sshmgr/internal/exec"
+	"github.com/systeampl/sshmgr/internal/forwards"
+	"github.com/systeampl/sshmgr/internal/importer"
+	"github.com/systeampl/sshmgr/internal/lint"
+	"github.com/systeampl/sshmgr/internal/rotate"
+	"github.com/systeampl/sshmgr/internal/secret"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"golang.org/x/term"
 )
@@ -149,7 +151,7 @@ func cmdRotateKey(args []string) {
 	if *newKey == "" {
 		fatal("rotate-key requires --new-key <path-to-new-private-key>")
 	}
-	cfg, _, err := config.Load()
+	cfg, cfgPath, err := config.Load()
 	if err != nil {
 		fatal(err.Error())
 	}
@@ -160,6 +162,9 @@ func cmdRotateKey(args []string) {
 				sel.Hosts = append(sel.Hosts, h)
 			}
 		}
+	}
+	if err := exec_.ValidateSelector(cfg, sel); err != nil {
+		fatal(err.Error())
 	}
 	aliases := exec_.Select(cfg, sel)
 	if len(aliases) == 0 {
@@ -172,7 +177,7 @@ func cmdRotateKey(args []string) {
 		mode = "append + verify + REMOVE OLD"
 	}
 	fmt.Fprintf(os.Stderr, "[sshmgr] key rotation on %d host(s) — mode: %s\n", len(aliases), mode)
-	results := rotate.Run(cfg, aliases, *newKey, *removeOld, *dryRun, *parallel)
+	results := rotate.Run(cfg, cfgPath, aliases, *newKey, *removeOld, *dryRun, *parallel)
 	for _, r := range results {
 		if r.Err != nil {
 			os.Exit(1)
@@ -259,19 +264,29 @@ func cmdTrust(args []string) {
 	// first connected via `ssh <alias>`), and the alias's bracketed form.
 	targets := []string{
 		h.Host,
-		fmt.Sprintf("[%s]:%d", h.Host, port),
+		net.JoinHostPort(strings.Trim(h.Host, "[]"), strconv.Itoa(port)),
 		alias,
-		fmt.Sprintf("[%s]:%d", alias, port),
+		net.JoinHostPort(alias, strconv.Itoa(port)),
 	}
 	seen := map[string]bool{}
+	var failures []string
 	for _, t := range targets {
 		if seen[t] {
 			continue
 		}
 		seen[t] = true
-		cmd := exec.Command("ssh-keygen", "-R", t)
+		keygenArgs := []string{"-R", t}
+		if knownHosts := os.Getenv("SSHMGR_KNOWN_HOSTS"); knownHosts != "" {
+			keygenArgs = []string{"-f", config.ExpandPath(knownHosts), "-R", t}
+		}
+		cmd := exec.Command("ssh-keygen", keygenArgs...)
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
-		_ = cmd.Run()
+		if err := cmd.Run(); err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", t, err))
+		}
+	}
+	if len(failures) > 0 {
+		fatal("could not update known_hosts:\n  " + strings.Join(failures, "\n  "))
 	}
 	fmt.Fprintf(os.Stderr, "[sshmgr] cleared known_hosts entries for %s (%s)\n", alias, h.Host)
 }
@@ -416,27 +431,88 @@ func cmdAdd(args []string) {
 }
 
 func cmdEdit(args []string) {
-	_, path, err := config.Load()
+	if len(args) != 0 {
+		fatal("usage: sshmgr edit")
+	}
+	cfg, path, err := config.Load()
 	if err != nil {
 		fatal(err.Error())
 	}
-	editor := os.Getenv("EDITOR")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if err := config.Save(cfg, path); err != nil {
+			fatal("cannot create initial config: " + err.Error())
+		}
+	} else if err != nil {
+		fatal("cannot inspect config: " + err.Error())
+	}
+	editor := strings.TrimSpace(os.Getenv("VISUAL"))
+	if editor == "" {
+		editor = strings.TrimSpace(os.Getenv("EDITOR"))
+	}
 	if editor == "" {
 		editor = "vi"
 	}
-	editorExec, err := lookPath(editor)
-	if err != nil {
-		fatal("cannot find " + editor + " in PATH: " + err.Error())
+	editorArgv, err := splitEditorCommand(editor)
+	if err != nil || len(editorArgv) == 0 {
+		fatal("invalid editor command: " + editor)
 	}
-	editorArgs := []string{editor, path}
-	// If the user supplied an alias, pass it to vim/nvim as a "go to this line"
-	// hint via /pattern (works for vi/vim/nvim; harmless otherwise).
-	_ = args
-	cmd := exec.Command(editorExec, editorArgs[1:]...)
+	editorExec, err := lookPath(editorArgv[0])
+	if err != nil {
+		fatal("cannot find " + editorArgv[0] + " in PATH: " + err.Error())
+	}
+	cmd := exec.Command(editorExec, append(editorArgv[1:], path)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		fatal(err.Error())
 	}
+}
+
+// splitEditorCommand accepts conventional VISUAL/EDITOR values such as
+// `code --wait` or `nvim -f`, including quoted arguments, without invoking a
+// shell. The config path is appended as a separate argv element by cmdEdit.
+func splitEditorCommand(s string) ([]string, error) {
+	var out []string
+	var cur strings.Builder
+	var quote rune
+	escaped := false
+	flush := func() {
+		if cur.Len() > 0 {
+			out = append(out, cur.String())
+			cur.Reset()
+		}
+	}
+	for _, r := range s {
+		if escaped {
+			cur.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' && quote != '\'' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			quote = r
+		case ' ', '\t', '\r', '\n':
+			flush()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if escaped || quote != 0 {
+		return nil, fmt.Errorf("unterminated escape or quote")
+	}
+	flush()
+	return out, nil
 }
 
 func cmdRm(args []string) {
@@ -451,10 +527,13 @@ func cmdRm(args []string) {
 	if _, ok := cfg.Hosts[alias]; !ok {
 		fatal("alias not found: " + alias)
 	}
+	refs := append(cfg.AliasReferences(alias), forwards.FileAliasReferences(cfg, alias)...)
+	if len(refs) > 0 {
+		fatal(fmt.Sprintf("cannot remove %q; still referenced by: %s", alias, strings.Join(refs, ", ")))
+	}
 	delete(cfg.Hosts, alias)
 	if err := config.Save(cfg, path); err != nil {
 		fatal(err.Error())
 	}
 	fmt.Printf("removed %s from %s\n", alias, path)
 }
-

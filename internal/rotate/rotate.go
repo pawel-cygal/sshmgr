@@ -8,6 +8,8 @@ package rotate
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -15,9 +17,9 @@ import (
 	"strings"
 	"sync"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/sshc"
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/sshc"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/pkg/sftp"
@@ -28,13 +30,20 @@ const authorizedKeysPath = ".ssh/authorized_keys"
 
 // Result is one host's rotation outcome.
 type Result struct {
-	Alias      string
-	Added      bool   // new key appended (false if already present)
-	Verified   bool   // a key-only connection with the new key succeeded
-	OldRemoved bool   // old key line removed from authorized_keys
-	Skipped    bool   // dry-run, or nothing to do
-	Err        error  // first failure; when set, nothing destructive happened
-	Note       string // human summary
+	Alias         string
+	Added         bool   // new key appended (false if already present)
+	Verified      bool   // a key-only connection with the new key succeeded
+	ConfigUpdated bool   // config now points at the verified new key
+	OldRemoved    bool   // old key line removed from authorized_keys
+	Skipped       bool   // dry-run, or nothing to do
+	Err           error  // first failure; old-key removal failures are errors too
+	Note          string // human summary
+}
+
+type prepared struct {
+	result            Result
+	oldPub            ssh.PublicKey
+	needsConfigUpdate bool
 }
 
 // PublicKeyLine reads a private key file and returns its authorized_keys
@@ -45,17 +54,30 @@ func PublicKeyLine(privKeyPath string) (string, ssh.PublicKey, error) {
 		return "", nil, fmt.Errorf("read key %s: %w", privKeyPath, err)
 	}
 	signer, err := ssh.ParsePrivateKey(data)
-	if err != nil {
+	if err == nil {
+		pub := signer.PublicKey()
+		return string(ssh.MarshalAuthorizedKey(pub)), pub, nil
+	}
+	var missing *ssh.PassphraseMissingError
+	if !errors.As(err, &missing) {
 		return "", nil, fmt.Errorf("parse key %s: %w", privKeyPath, err)
 	}
-	pub := signer.PublicKey()
+	pubPath := config.ExpandPath(privKeyPath) + ".pub"
+	pubData, readErr := os.ReadFile(pubPath)
+	if readErr != nil {
+		return "", nil, fmt.Errorf("key %s is encrypted and public sidecar %s cannot be read: %w", privKeyPath, pubPath, readErr)
+	}
+	pub, _, _, _, parseErr := ssh.ParseAuthorizedKey(pubData)
+	if parseErr != nil {
+		return "", nil, fmt.Errorf("parse public key sidecar %s: %w", pubPath, parseErr)
+	}
 	return string(ssh.MarshalAuthorizedKey(pub)), pub, nil
 }
 
 // Run rotates the new key onto every alias. When removeOld is false (the
 // default) it only appends + verifies — a safe first phase you can run
 // fleet-wide, confirm, and only later re-run with removeOld=true.
-func Run(cfg *config.Config, aliases []string, newKeyPath string, removeOld, dryRun bool, parallel int) []Result {
+func Run(cfg *config.Config, cfgPath string, aliases []string, newKeyPath string, removeOld, dryRun bool, parallel int) []Result {
 	if parallel <= 0 {
 		parallel = 6
 	}
@@ -70,7 +92,8 @@ func Run(cfg *config.Config, aliases []string, newKeyPath string, removeOld, dry
 	}
 
 	sem := make(chan struct{}, parallel)
-	results := make([]Result, len(aliases))
+	targetLocks := rotationTargetLocks(cfg, aliases)
+	preparedHosts := make([]prepared, len(aliases))
 	var wg sync.WaitGroup
 	for i, alias := range aliases {
 		wg.Add(1)
@@ -78,44 +101,145 @@ func Run(cfg *config.Config, aliases []string, newKeyPath string, removeOld, dry
 		go func(i int, alias string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			results[i] = rotateOne(cfg, alias, newKeyPath, newLine, newPub, removeOld, dryRun)
+			lock := targetLocks[alias]
+			lock.Lock()
+			defer lock.Unlock()
+			preparedHosts[i] = prepareOne(cfg, alias, newKeyPath, newLine, newPub, removeOld, dryRun)
 		}(i, alias)
+	}
+	wg.Wait()
+
+	results := make([]Result, len(preparedHosts))
+	for i := range preparedHosts {
+		results[i] = preparedHosts[i].result
+	}
+	if dryRun || !removeOld {
+		printSummary(results, removeOld, dryRun)
+		return results
+	}
+
+	// Persist the verified new key before removing any old key. If this save
+	// fails, every old key remains authorized and the existing config remains
+	// usable. Hosts that failed append/verify are deliberately left unchanged.
+	originals := make(map[string]config.HostConfig)
+	for i, p := range preparedHosts {
+		if p.result.Err != nil || !p.result.Verified || !p.needsConfigUpdate {
+			continue
+		}
+		originals[p.result.Alias] = cfg.Hosts[p.result.Alias]
+		h := cfg.Hosts[p.result.Alias]
+		h.Key = newKeyPath
+		cfg.Hosts[p.result.Alias] = h
+		results[i].ConfigUpdated = true
+	}
+	if len(originals) > 0 {
+		if err := config.Save(cfg, cfgPath); err != nil {
+			for alias, h := range originals {
+				cfg.Hosts[alias] = h
+			}
+			for i := range results {
+				if results[i].ConfigUpdated {
+					results[i].ConfigUpdated = false
+					results[i].Err = fmt.Errorf("persist verified new key before old-key removal: %w (old key kept; new key remains authorized)", err)
+				}
+			}
+			printSummary(results, removeOld, dryRun)
+			return results
+		}
+	}
+
+	// Only now is removal allowed. Reconnect explicitly with the new key; do
+	// not trust the just-updated config or fall back to any other auth method.
+	for i, p := range preparedHosts {
+		if results[i].Err != nil || !results[i].Verified {
+			continue
+		}
+		if p.oldPub == nil {
+			if results[i].ConfigUpdated {
+				results[i].Note = "new key verified + configured; no different old key to remove"
+			} else {
+				results[i].Skipped = true
+				results[i].Note = "new key already configured + verified; no different old key to remove"
+			}
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, alias string, oldPub ssh.PublicKey) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			lock := targetLocks[alias]
+			lock.Lock()
+			defer lock.Unlock()
+			removeOldOne(cfg, alias, newKeyPath, oldPub, &results[i])
+		}(i, p.result.Alias, p.oldPub)
 	}
 	wg.Wait()
 	printSummary(results, removeOld, dryRun)
 	return results
 }
 
-func rotateOne(cfg *config.Config, alias, newKeyPath, newLine string, newPub ssh.PublicKey, removeOld, dryRun bool) Result {
-	r := Result{Alias: alias}
+// rotationTargetLocks serialize read-modify-write operations when several
+// aliases describe the same SSH account. Without this, two concurrent
+// authorized_keys replacements could each reintroduce the key removed by the
+// other. Different aliases remain fully parallel.
+func rotationTargetLocks(cfg *config.Config, aliases []string) map[string]*sync.Mutex {
+	byTarget := map[string]*sync.Mutex{}
+	byAlias := make(map[string]*sync.Mutex, len(aliases))
+	for _, alias := range aliases {
+		h, ok := cfg.ResolveHost(alias)
+		key := "alias\x00" + alias
+		if ok {
+			key = strings.ToLower(strings.TrimSpace(h.User)) + "\x00" +
+				strings.ToLower(strings.TrimSpace(h.Host)) + "\x00" + fmt.Sprintf("%d", h.Port)
+		}
+		lock := byTarget[key]
+		if lock == nil {
+			lock = &sync.Mutex{}
+			byTarget[key] = lock
+		}
+		byAlias[alias] = lock
+	}
+	return byAlias
+}
+
+func prepareOne(cfg *config.Config, alias, newKeyPath, newLine string, newPub ssh.PublicKey, removeOld, dryRun bool) prepared {
+	p := prepared{result: Result{Alias: alias}}
+	r := &p.result
 
 	host, ok := cfg.ResolveHost(alias)
 	if !ok {
 		r.Err = errors.New("alias not found")
-		return r
+		return p
 	}
 
-	// Refuse to rotate a key onto itself. If --new-key is (accidentally) the
-	// host's currently-configured key, a --remove-old run would strip the
-	// only key from authorized_keys and lock the host out.
+	// Capture the old key before touching the host. An equal key means the
+	// config is already migrated; it must never be removed as "old".
 	if removeOld && host.Key != "" {
-		if _, oldPub, err := PublicKeyLine(host.Key); err == nil && bytes.Equal(oldPub.Marshal(), newPub.Marshal()) {
-			r.Err = fmt.Errorf("--new-key is the same key already configured for this host — refusing (would remove the only key)")
-			return r
+		_, oldPub, err := PublicKeyLine(host.Key)
+		if err != nil {
+			r.Err = fmt.Errorf("read configured old key before rotation: %w", err)
+			return p
 		}
+		if !bytes.Equal(oldPub.Marshal(), newPub.Marshal()) {
+			p.oldPub = oldPub
+			p.needsConfigUpdate = true
+		}
+	} else if removeOld && host.Key == "" {
+		p.needsConfigUpdate = true
 	}
 
 	// --- step 1: connect with current credentials ---
 	client, err := sshc.ConnectAlias(cfg, alias)
 	if err != nil {
 		r.Err = fmt.Errorf("connect: %w", err)
-		return r
+		return p
 	}
 	sc, err := sftp.NewClient(client)
 	if err != nil {
 		sshc.CloseChain(client)
 		r.Err = fmt.Errorf("sftp: %w", err)
-		return r
+		return p
 	}
 
 	ak, err := readAuthorizedKeys(sc)
@@ -123,7 +247,7 @@ func rotateOne(cfg *config.Config, alias, newKeyPath, newLine string, newPub ssh
 		sc.Close()
 		sshc.CloseChain(client)
 		r.Err = fmt.Errorf("read authorized_keys: %w", err)
-		return r
+		return p
 	}
 	alreadyHasNew := containsKey(ak, newPub)
 
@@ -132,6 +256,8 @@ func rotateOne(cfg *config.Config, alias, newKeyPath, newLine string, newPub ssh
 		sshc.CloseChain(client)
 		r.Skipped = true
 		switch {
+		case p.oldPub == nil && removeOld && alreadyHasNew:
+			r.Note = "would verify; new key is already configured or no different old key exists"
 		case alreadyHasNew && removeOld:
 			r.Note = "would verify + remove old key (new key already present)"
 		case alreadyHasNew:
@@ -141,7 +267,7 @@ func rotateOne(cfg *config.Config, alias, newKeyPath, newLine string, newPub ssh
 		default:
 			r.Note = "would append new key + verify"
 		}
-		return r
+		return p
 	}
 
 	// --- step 2: append the new key (idempotent) ---
@@ -151,65 +277,81 @@ func rotateOne(cfg *config.Config, alias, newKeyPath, newLine string, newPub ssh
 			sc.Close()
 			sshc.CloseChain(client)
 			r.Err = fmt.Errorf("append new key: %w", err)
-			return r
+			return p
 		}
 		r.Added = true
 	}
-	sc.Close()
-	sshc.CloseChain(client)
 
 	// --- step 3: verify with a key-only connection ---
 	if err := sshc.VerifyKey(cfg, alias, newKeyPath); err != nil {
-		r.Err = fmt.Errorf("verify FAILED — old key left intact: %w", err)
-		return r
+		if r.Added {
+			if rollbackErr := rollbackKey(sc, newPub); rollbackErr != nil {
+				r.Err = fmt.Errorf("verify FAILED: %w; rollback of appended key also failed: %v (old key remains intact)", err, rollbackErr)
+			} else {
+				r.Added = false
+				r.Err = fmt.Errorf("verify FAILED — appended key rolled back, old key left intact: %w", err)
+			}
+		} else {
+			r.Err = fmt.Errorf("verify FAILED — old key left intact: %w", err)
+		}
+		sc.Close()
+		sshc.CloseChain(client)
+		return p
 	}
+	sc.Close()
+	sshc.CloseChain(client)
 	r.Verified = true
 
 	if !removeOld {
 		r.Note = "new key added + verified (old key kept — re-run with --remove-old to drop it)"
-		return r
+		return p
 	}
+	r.Note = "new key verified; ready to persist config before old-key removal"
+	return p
+}
 
-	// --- step 4: remove the old key — only reached after verify passed ---
-	if host.Key == "" {
-		r.Note = "verified; no 'key:' configured so there's no old key to remove"
-		return r
-	}
-	_, oldPub, err := PublicKeyLine(host.Key)
+func rollbackKey(sc *sftp.Client, pub ssh.PublicKey) error {
+	current, err := readAuthorizedKeys(sc)
 	if err != nil {
-		r.Note = "verified; could not derive old public key (" + err.Error() + ") — old key kept"
-		return r
+		return err
 	}
-	// Reconnect (the new key works now, so this still succeeds) and strip the old line.
-	client2, err := sshc.ConnectAlias(cfg, alias)
+	without, removed := removeKey(current, pub)
+	if !removed {
+		return nil
+	}
+	return writeAuthorizedKeys(sc, without)
+}
+
+func removeOldOne(cfg *config.Config, alias, newKeyPath string, oldPub ssh.PublicKey, r *Result) {
+	client2, err := sshc.ConnectAliasWithKey(cfg, alias, newKeyPath)
 	if err != nil {
-		r.Note = "verified + new key added, but reconnect to remove old key failed: " + err.Error()
-		return r
+		r.Err = fmt.Errorf("new-key reconnect for old-key removal: %w (old key kept)", err)
+		return
 	}
 	defer sshc.CloseChain(client2)
 	sc2, err := sftp.NewClient(client2)
 	if err != nil {
-		r.Note = "verified; sftp for old-key removal failed: " + err.Error()
-		return r
+		r.Err = fmt.Errorf("sftp for old-key removal: %w (old key kept)", err)
+		return
 	}
 	defer sc2.Close()
 	ak2, err := readAuthorizedKeys(sc2)
 	if err != nil {
-		r.Note = "verified; re-read of authorized_keys failed: " + err.Error()
-		return r
+		r.Err = fmt.Errorf("re-read authorized_keys for old-key removal: %w (old key kept)", err)
+		return
 	}
 	stripped, removed := removeKey(ak2, oldPub)
 	if !removed {
-		r.Note = "verified; old key was not present in authorized_keys (nothing to remove)"
-		return r
+		r.Skipped = true
+		r.Note = "new key verified + configured; old key already absent"
+		return
 	}
 	if err := writeAuthorizedKeys(sc2, stripped); err != nil {
-		r.Note = "verified; removing old key failed: " + err.Error() + " — old key may still be present"
-		return r
+		r.Err = fmt.Errorf("remove old key: %w (new key is configured; old key may still be present)", err)
+		return
 	}
 	r.OldRemoved = true
-	r.Note = "new key added + verified, old key removed"
-	return r
+	r.Note = "new key verified + configured, old key removed"
 }
 
 // readAuthorizedKeys returns the file content, or empty when the file
@@ -238,7 +380,15 @@ func writeAuthorizedKeys(sc *sftp.Client, content []byte) error {
 	if err := sc.MkdirAll(".ssh"); err != nil {
 		return fmt.Errorf("mkdir .ssh: %w", err)
 	}
-	tmp := ".ssh/.authorized_keys.sshmgr-tmp"
+	if err := sc.Chmod(".ssh", 0o700); err != nil {
+		return fmt.Errorf("chmod .ssh: %w", err)
+	}
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return fmt.Errorf("create authorized_keys temp name: %w", err)
+	}
+	suffix := hex.EncodeToString(nonce[:])
+	tmp := ".ssh/.authorized_keys.sshmgr-tmp-" + suffix
 	f, err := sc.Create(tmp)
 	if err != nil {
 		return err
@@ -263,8 +413,7 @@ func writeAuthorizedKeys(sc *sftp.Client, content []byte) error {
 	// Fallback for servers without the posix-rename extension. Never leave
 	// authorized_keys absent: move the live file aside FIRST, swap the new
 	// one in, then drop the backup. On failure, restore from the backup.
-	bak := authorizedKeysPath + ".sshmgr-bak"
-	_ = sc.Remove(bak)
+	bak := authorizedKeysPath + ".sshmgr-bak-" + suffix
 	_ = sc.Rename(authorizedKeysPath, bak) // ok to fail if file didn't exist
 	if err := sc.Rename(tmp, authorizedKeysPath); err != nil {
 		_ = sc.Rename(bak, authorizedKeysPath) // put the original back

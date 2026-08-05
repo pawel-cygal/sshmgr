@@ -9,10 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/fwd"
 
 	"gopkg.in/yaml.v3"
 )
@@ -126,6 +125,21 @@ func ForAlias(cfg *config.Config, alias string) []Resolved {
 	return out
 }
 
+// FileAliasReferences returns file-library profiles that structurally refer
+// to alias. They cannot be rewritten by config.Save, so host deletion must
+// ask the user to edit those files first.
+func FileAliasReferences(cfg *config.Config, alias string) []string {
+	files, _ := FileForwards(cfg)
+	var refs []string
+	for _, r := range files {
+		if r.Alias == alias {
+			refs = append(refs, fmt.Sprintf("forward %s (%s)", r.Name, r.Source))
+		}
+	}
+	sort.Strings(refs)
+	return refs
+}
+
 // ValidateProfile checks structural fields: required alias / type / spec,
 // type ∈ {L, R, D}, and a basic shape check on spec (number of colon-
 // separated parts plus numeric ports). Runtime parsing in internal/fwd
@@ -140,31 +154,18 @@ func ValidateProfile(p config.ForwardProfile) error {
 	if p.Spec == "" {
 		return fmt.Errorf("spec is required")
 	}
-	parts := strings.Split(p.Spec, ":")
 	switch p.Type {
-	case "L", "R":
-		// [bind:]localPort:remoteHost:remotePort  →  3 or 4 colon-separated parts
-		if len(parts) < 3 || len(parts) > 4 {
-			return fmt.Errorf("type %s requires spec [bind:]port:host:port, got %q", p.Type, p.Spec)
+	case "L":
+		if _, _, err := fwd.ParseLocalSpec(p.Spec); err != nil {
+			return fmt.Errorf("type L spec %q: %w", p.Spec, err)
 		}
-		// The host part is parts[len-2]; the two port parts must be numeric.
-		portIdx := []int{0, len(parts) - 1}
-		if len(parts) == 4 {
-			portIdx = []int{1, 3}
-		}
-		for _, i := range portIdx {
-			if _, err := strconv.Atoi(parts[i]); err != nil {
-				return fmt.Errorf("type %s spec %q: %q is not a valid port", p.Type, p.Spec, parts[i])
-			}
+	case "R":
+		if _, _, err := fwd.ParseRemoteSpec(p.Spec); err != nil {
+			return fmt.Errorf("type R spec %q: %w", p.Spec, err)
 		}
 	case "D":
-		// [bind:]port  →  1 or 2 parts
-		if len(parts) < 1 || len(parts) > 2 {
-			return fmt.Errorf("type D requires spec [bind:]port, got %q", p.Spec)
-		}
-		port := parts[len(parts)-1]
-		if _, err := strconv.Atoi(port); err != nil {
-			return fmt.Errorf("type D spec %q: %q is not a valid port", p.Spec, port)
+		if _, err := fwd.ParseDynamicSpec(p.Spec); err != nil {
+			return fmt.Errorf("type D spec %q: %w", p.Spec, err)
 		}
 	default:
 		return fmt.Errorf("type %q is invalid (must be L | R | D)", p.Type)

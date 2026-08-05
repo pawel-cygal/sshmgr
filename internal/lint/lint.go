@@ -9,9 +9,10 @@ import (
 	"sort"
 	"strings"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/forwards"
-	"sshmgr/internal/snippets"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/forwards"
+	"github.com/systeampl/sshmgr/internal/kvm"
+	"github.com/systeampl/sshmgr/internal/snippets"
 )
 
 // Severity grades each finding so the user can filter at a glance.
@@ -60,8 +61,11 @@ func Summarize(findings []Finding) Report {
 func Run(cfg *config.Config) []Finding {
 	var out []Finding
 
-	// 1. Broken proxy_jump references.
-	for alias, h := range cfg.Hosts {
+	// 1. Broken proxy_jump references and multi-host cycles. Use resolved hosts
+	// so group-inherited jumps receive the same validation as host-local ones.
+	jumpGraph := map[string]string{}
+	for alias := range cfg.Hosts {
+		h, _ := cfg.ResolveHost(alias)
 		if h.ProxyJump == "" {
 			continue
 		}
@@ -71,6 +75,47 @@ func Run(cfg *config.Config) []Finding {
 				Scope:    alias,
 				Message:  fmt.Sprintf("proxy_jump references unknown alias %q", h.ProxyJump),
 			})
+			continue
+		}
+		jumpGraph[alias] = h.ProxyJump
+	}
+	state := map[string]uint8{}
+	var stack []string
+	var visit func(string)
+	visit = func(alias string) {
+		state[alias] = 1
+		stack = append(stack, alias)
+		if next := jumpGraph[alias]; next != "" {
+			switch state[next] {
+			case 0:
+				visit(next)
+			case 1:
+				start := 0
+				for i := range stack {
+					if stack[i] == next {
+						start = i
+						break
+					}
+				}
+				cycle := append(append([]string{}, stack[start:]...), next)
+				out = append(out, Finding{
+					Severity: SevError,
+					Scope:    next,
+					Message:  "proxy_jump cycle: " + strings.Join(cycle, " -> "),
+				})
+			}
+		}
+		stack = stack[:len(stack)-1]
+		state[alias] = 2
+	}
+	aliases := make([]string, 0, len(cfg.Hosts))
+	for alias := range cfg.Hosts {
+		aliases = append(aliases, alias)
+	}
+	sort.Strings(aliases)
+	for _, alias := range aliases {
+		if state[alias] == 0 {
+			visit(alias)
 		}
 	}
 
@@ -136,7 +181,7 @@ func Run(cfg *config.Config) []Finding {
 		}
 	}
 
-	// 5b. KVM blocks: a configured controller needs a reachable host and a way
+	// 5b. KVM blocks: a configured controller needs a valid endpoint and a way
 	// to authenticate, or every kvm action will fail at runtime.
 	for alias := range cfg.Hosts {
 		resolved, _ := cfg.ResolveHost(alias)
@@ -146,11 +191,28 @@ func Run(cfg *config.Config) []Finding {
 		}
 		host := k.ResolvedHost(map[string]string{
 			"alias": alias, "host": resolved.Host, "user": resolved.User,
+			"port": fmt.Sprintf("%d", resolved.Port),
 		})
 		// An empty host means the block is just group-inherited credentials with
 		// no device for this host — not configured here, so nothing to validate.
 		if strings.TrimSpace(host) == "" {
 			continue
+		}
+		if !kvm.KnownType(k.Type) {
+			out = append(out, Finding{
+				Severity: SevError,
+				Scope:    alias,
+				Message:  fmt.Sprintf("unknown kvm type %q", k.Type),
+			})
+		} else if err := kvm.ValidateConfig(*k, host); err != nil {
+			out = append(out, Finding{Severity: SevError, Scope: alias, Message: err.Error()})
+		}
+		if strings.Contains(host, "{{") {
+			out = append(out, Finding{
+				Severity: SevError,
+				Scope:    alias,
+				Message:  fmt.Sprintf("kvm host contains an unresolved placeholder: %q", host),
+			})
 		}
 		if k.Password == "" && k.PasswordEnv == "" && k.PasswordKeyring == "" && k.PasswordCmd == "" && !k.PasswordPrompt {
 			out = append(out, Finding{
@@ -158,6 +220,54 @@ func Run(cfg *config.Config) []Finding {
 				Scope:    alias,
 				Message:  "kvm has no password backend (set kvm.password_keyring or similar)",
 			})
+		}
+	}
+
+	// 5c. Network ranges, plaintext credentials, and native/external option
+	// mismatches. These are valid YAML but either fail later or weaken the
+	// secret-management model, so surface them in the normal lint pass.
+	for _, alias := range aliases {
+		r, _ := cfg.ResolveHost(alias)
+		if strings.TrimSpace(r.Host) == "" {
+			out = append(out, Finding{Severity: SevError, Scope: alias, Message: "host is empty"})
+		}
+		if r.Port < 1 || r.Port > 65535 {
+			out = append(out, Finding{Severity: SevError, Scope: alias, Message: fmt.Sprintf("invalid SSH port %d (want 1..65535)", r.Port)})
+		}
+		if r.ConnectTimeout < 0 || r.ServerAliveInterval < 0 || r.ServerAliveCountMax < 0 {
+			out = append(out, Finding{Severity: SevError, Scope: alias, Message: "SSH timeout/keepalive values cannot be negative"})
+		}
+		h := cfg.Hosts[alias]
+		if h.Password != "" {
+			out = append(out, Finding{Severity: SevWarn, Scope: alias, Message: "plaintext SSH password in config; prefer password_keyring, password_env, or password_cmd"})
+		}
+		for i, step := range h.LoginSteps {
+			if step.Response != "" {
+				out = append(out, Finding{Severity: SevWarn, Scope: alias, Message: fmt.Sprintf("login_steps[%d] contains a plaintext response", i)})
+			}
+		}
+		if h.KVM != nil && h.KVM.Password != "" {
+			out = append(out, Finding{Severity: SevWarn, Scope: alias, Message: "plaintext KVM password in config; prefer password_keyring, password_env, or password_cmd"})
+		}
+		if h.External && (h.X11Forward || h.ForwardAgent || len(h.LoginSteps) > 0 || h.Persistent != "") {
+			out = append(out, Finding{Severity: SevInfo, Scope: alias, Message: "native session options (x11/agent/login_steps/persistent) are ignored for external hosts"})
+		}
+	}
+	for name, g := range cfg.Groups {
+		scope := "group " + name
+		if g.Port < 0 || g.Port > 65535 {
+			out = append(out, Finding{Severity: SevError, Scope: scope, Message: fmt.Sprintf("invalid SSH port %d", g.Port)})
+		}
+		if g.Password != "" {
+			out = append(out, Finding{Severity: SevWarn, Scope: scope, Message: "plaintext SSH password in config"})
+		}
+		for i, step := range g.LoginSteps {
+			if step.Response != "" {
+				out = append(out, Finding{Severity: SevWarn, Scope: scope, Message: fmt.Sprintf("login_steps[%d] contains a plaintext response", i)})
+			}
+		}
+		if g.KVM != nil && g.KVM.Password != "" {
+			out = append(out, Finding{Severity: SevWarn, Scope: scope, Message: "plaintext KVM password in config"})
 		}
 	}
 

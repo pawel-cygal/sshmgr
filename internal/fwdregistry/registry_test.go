@@ -123,7 +123,11 @@ func TestFindAmbiguousPrefix(t *testing.T) {
 	// craft files with deliberately colliding short IDs to exercise the
 	// ambiguous-prefix branch.
 	for _, id := range []string{"abc11111", "abc22222"} {
-		body := `{"id":"` + id + `","alias":"h","type":"L","spec":"1:h:1","pid":` + fmt.Sprint(os.Getpid()) + `,"started_at":"2026-01-01T00:00:00Z","backend":"native","source":"direct"}`
+		token, err := processToken(os.Getpid())
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := `{"id":"` + id + `","alias":"h","type":"L","spec":"1:h:1","pid":` + fmt.Sprint(os.Getpid()) + `,"process_token":"` + token + `","started_at":"2026-01-01T00:00:00Z","backend":"native","source":"direct"}`
 		if err := os.WriteFile(filepath.Join(StateDir(), id+".json"), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -159,6 +163,11 @@ func TestKillTerminatesProcessAndRemovesEntry(t *testing.T) {
 		PID: cmd.Process.Pid, StartedAt: time.Now().UTC(),
 		Backend: "native", Source: "direct",
 	}
+	token, err := processToken(e.PID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.ProcessToken = token
 	data, _ := json.Marshal(e)
 	if err := os.WriteFile(filepath.Join(dir, e.ID+".json"), data, 0o600); err != nil {
 		t.Fatal(err)
@@ -171,5 +180,13 @@ func TestKillTerminatesProcessAndRemovesEntry(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, e.ID+".json")); err == nil {
 		t.Error("Kill must remove the registry file")
+	}
+}
+
+func TestKillRefusesRecycledPIDIdentity(t *testing.T) {
+	withTempState(t)
+	e := Entry{ID: "stale", PID: os.Getpid(), ProcessToken: "not-this-process"}
+	if err := Kill(e, time.Millisecond); err == nil || !strings.Contains(err.Error(), "refusing to signal") {
+		t.Fatalf("stale identity was not rejected: %v", err)
 	}
 }

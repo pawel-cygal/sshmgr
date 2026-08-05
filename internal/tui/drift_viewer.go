@@ -10,8 +10,8 @@ import (
 	"os"
 	"strings"
 
-	"sshmgr/internal/exec"
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/exec"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -44,7 +44,7 @@ func ShowDriftReport(title, cmd string, groups []exec.OutputGroup) ExecChoice {
 		SetSelectedTextColor(theme.Current.Inverse).
 		SetSelectedBackgroundColor(theme.Current.Selection)
 	list.SetBorder(true).
-		SetTitle(" " + title + " ").
+		SetTitle(" "+title+" ").
 		SetTitleAlign(tview.AlignLeft).
 		SetBorderColor(theme.Current.Primary).
 		SetTitleColor(theme.Current.Primary).

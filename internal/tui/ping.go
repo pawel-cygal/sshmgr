@@ -5,11 +5,10 @@ import (
 	"net"
 	"os/exec"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 )
 
 // pingStatus is what's currently known about a host's reachability.
@@ -42,6 +41,26 @@ type pingMap struct {
 	m  map[string]pingStatus
 }
 
+type probeCall struct {
+	status pingStatus
+	done   chan struct{}
+}
+
+func memoProbe(cache map[string]*probeCall, mu *sync.Mutex, key string, probe func() pingStatus) pingStatus {
+	mu.Lock()
+	if call, ok := cache[key]; ok {
+		mu.Unlock()
+		<-call.done
+		return call.status
+	}
+	call := &probeCall{done: make(chan struct{})}
+	cache[key] = call
+	mu.Unlock()
+	call.status = probe()
+	close(call.done)
+	return call.status
+}
+
 func newPingMap() *pingMap { return &pingMap{m: map[string]pingStatus{}} }
 
 func (p *pingMap) Get(alias string) pingStatus {
@@ -63,26 +82,32 @@ func (p *pingMap) Set(alias string, s pingStatus) {
 //
 // onChange is invoked from a tview.Application.QueueUpdateDraw context so
 // repaints land cleanly.
-func startPinger(cfg *config.Config, pings *pingMap, onChange func()) (stop func()) {
+func startPinger(pings *pingMap, onChange func()) (stop func()) {
 	stopCh := make(chan struct{})
 
 	// Cache ssh-master check results per jump within one round so we don't run
 	// `ssh -O check bastion-eu` 364 times for fleet hosts.
 	doRound := func() {
-		jumpCache := map[string]pingStatus{}
+		cfg, _, err := config.Load()
+		if err != nil {
+			return
+		}
+		jumpCache := map[string]*probeCall{}
+		tcpCache := map[string]*probeCall{}
 		var jumpMu sync.Mutex
+		var tcpMu sync.Mutex
 		jumpProbe := func(name string) pingStatus {
-			jumpMu.Lock()
-			if v, ok := jumpCache[name]; ok {
-				jumpMu.Unlock()
-				return v
-			}
-			jumpMu.Unlock()
-			s := probeSSHMaster(name)
-			jumpMu.Lock()
-			jumpCache[name] = s
-			jumpMu.Unlock()
-			return s
+			return memoProbe(jumpCache, &jumpMu, name, func() pingStatus { return probeSSHMaster(name) })
+		}
+		tcpProbe := func(addr string) pingStatus {
+			return memoProbe(tcpCache, &tcpMu, addr, func() pingStatus {
+				conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+				if err != nil {
+					return statusOffline
+				}
+				_ = conn.Close()
+				return statusOnline
+			})
 		}
 
 		var wg sync.WaitGroup
@@ -114,7 +139,7 @@ func startPinger(cfg *config.Config, pings *pingMap, onChange func()) (stop func
 			case h.ProxyCommand != "":
 				// Hosts behind proxy_command share fate with the jump it
 				// goes through. Extract `ssh <X> -W` and check master of X.
-				jump := extractSSHJump(h.ProxyCommand)
+				jump := config.ExtractSSHJumpAlias(h.ProxyCommand)
 				if jump == "" {
 					pings.Set(alias, statusUnknown)
 					continue
@@ -137,7 +162,28 @@ func startPinger(cfg *config.Config, pings *pingMap, onChange func()) (stop func
 					}
 					headAlias = jh.ProxyJump
 				}
-				jh, _ := cfg.ResolveHost(headAlias)
+				jh, ok := cfg.ResolveHost(headAlias)
+				if !ok || (jh.ProxyJump != "" && seen[jh.ProxyJump]) {
+					pings.Set(alias, statusUnknown)
+					continue
+				}
+				if jh.ProxyCommand != "" {
+					jump := config.ExtractSSHJumpAlias(jh.ProxyCommand)
+					if jump == "" {
+						pings.Set(alias, statusUnknown)
+						continue
+					}
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						status := jumpProbe(jump)
+						if status == statusOnline {
+							status = statusUnknown
+						}
+						pings.Set(alias, status)
+					}()
+					continue
+				}
 				port := jh.Port
 				if port == 0 {
 					port = 22
@@ -146,13 +192,13 @@ func startPinger(cfg *config.Config, pings *pingMap, onChange func()) (stop func
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-					if err != nil {
-						pings.Set(alias, statusOffline)
-						return
+					status := tcpProbe(addr)
+					if status == statusOnline {
+						// Only the head jump was probed. Do not claim the target
+						// itself is online when it was never contacted.
+						status = statusUnknown
 					}
-					conn.Close()
-					pings.Set(alias, statusOnline)
+					pings.Set(alias, status)
 				}()
 			default:
 				port := h.Port
@@ -163,13 +209,7 @@ func startPinger(cfg *config.Config, pings *pingMap, onChange func()) (stop func
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-					if err != nil {
-						pings.Set(alias, statusOffline)
-						return
-					}
-					conn.Close()
-					pings.Set(alias, statusOnline)
+					pings.Set(alias, tcpProbe(addr))
 				}()
 			}
 		}
@@ -206,19 +246,4 @@ func probeSSHMaster(name string) pingStatus {
 		return statusOnline
 	}
 	return statusUnknown
-}
-
-// extractSSHJump parses "ssh <name> -W %h:%p" and returns "<name>", or "" if
-// the proxy_command doesn't match that common form.
-func extractSSHJump(proxyCmd string) string {
-	fields := strings.Fields(proxyCmd)
-	if len(fields) < 2 || fields[0] != "ssh" {
-		return ""
-	}
-	for _, f := range fields[1:] {
-		if !strings.HasPrefix(f, "-") {
-			return f
-		}
-	}
-	return ""
 }

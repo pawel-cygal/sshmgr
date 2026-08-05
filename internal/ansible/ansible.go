@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"strings"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 
 	"gopkg.in/yaml.v3"
 )

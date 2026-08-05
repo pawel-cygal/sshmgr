@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 )
 
 // syncBuffer is a goroutine-safe bytes.Buffer for asserting on what the runner
@@ -248,5 +248,25 @@ func TestRunEscalationSkipsPasswordWhenPromptNeverComes(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "p1") {
 		t.Fatalf("password must NOT be sent when no password prompt appeared, got %q", out.String())
+	}
+}
+
+func TestRunEscalationDoesNotTreatQuietBannerAsSuccess(t *testing.T) {
+	insp := newExpectInspector(io.Discard)
+	var out syncBuffer
+	steps := []config.LoginStep{
+		{Command: "sudo su -", Expect: "assword", Response: "must-not-send", TimeoutMS: 120},
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- runEscalation(steps, config.HostConfig{}, &out, insp, 20*time.Millisecond, func(string) {})
+	}()
+	waitUntil(t, time.Second, func() bool { return strings.Contains(out.String(), "sudo su -") })
+	insp.Write([]byte("maintenance banner without a shell prompt"))
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("quiet banner must hard-timeout, got %v", err)
+	}
+	if strings.Contains(out.String(), "must-not-send") {
+		t.Fatalf("password leaked after ambiguous banner: %q", out.String())
 	}
 }

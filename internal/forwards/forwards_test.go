@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 )
 
 func TestValidateProfileOK(t *testing.T) {
@@ -17,6 +17,7 @@ func TestValidateProfileOK(t *testing.T) {
 		{Alias: "h", Type: "R", Spec: "8080:localhost:8080"},
 		{Alias: "h", Type: "D", Spec: "1080"},
 		{Alias: "h", Type: "D", Spec: "127.0.0.1:1080"},
+		{Alias: "h", Type: "L", Spec: "[::1]:3000:[2001:db8::5]:443"},
 	}
 	for _, p := range cases {
 		if err := ValidateProfile(p); err != nil {
@@ -34,9 +35,9 @@ func TestValidateProfileErrors(t *testing.T) {
 		{config.ForwardProfile{Alias: "h", Spec: "3000:h:3000"}, "type is required"},
 		{config.ForwardProfile{Alias: "h", Type: "L"}, "spec is required"},
 		{config.ForwardProfile{Alias: "h", Type: "X", Spec: "1"}, "is invalid"},
-		{config.ForwardProfile{Alias: "h", Type: "L", Spec: "3000:internal"}, "requires spec"},
-		{config.ForwardProfile{Alias: "h", Type: "L", Spec: "abc:internal:3000"}, "not a valid port"},
-		{config.ForwardProfile{Alias: "h", Type: "D", Spec: "abc"}, "not a valid port"},
+		{config.ForwardProfile{Alias: "h", Type: "L", Spec: "3000:internal"}, "expected [bind:]port:host:port"},
+		{config.ForwardProfile{Alias: "h", Type: "L", Spec: "abc:internal:3000"}, "must be an integer"},
+		{config.ForwardProfile{Alias: "h", Type: "D", Spec: "abc"}, "must be an integer"},
 	}
 	for _, c := range cases {
 		err := ValidateProfile(c.p)

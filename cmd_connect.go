@@ -6,11 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/external"
-	"sshmgr/internal/snippets"
-	"sshmgr/internal/sshc"
-
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/external"
+	"github.com/systeampl/sshmgr/internal/snippets"
+	"github.com/systeampl/sshmgr/internal/sshc"
 )
 
 func parseConnectArgs(args []string) (alias, command string, forceTTY bool) {
@@ -128,4 +127,3 @@ func cmdConnect(alias string) {
 	}
 	maybeReturnToUI()
 }
-

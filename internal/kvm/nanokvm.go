@@ -17,7 +17,7 @@ import (
 	"strings"
 	"sync"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 )
 
 func init() { Register("nanokvm", newNanoKVM) }
@@ -89,7 +89,9 @@ func (n *nanoKVM) ensureAuth(ctx context.Context) error {
 	var tok struct {
 		Token string `json:"token"`
 	}
-	_ = json.Unmarshal(resp.Data, &tok)
+	if err := json.Unmarshal(resp.Data, &tok); err != nil {
+		return fmt.Errorf("decode kvm login token: %w", err)
+	}
 	if tok.Token == "" {
 		return errors.New("kvm login returned no token")
 	}
@@ -122,14 +124,19 @@ func (n *nanoKVM) Status(ctx context.Context) (string, error) {
 	}
 	var resp apiResp
 	if err := n.get(ctx, "/api/vm/info", &resp); err != nil {
-		return "reachable (auth ok; /api/vm/info unavailable)", nil
+		return "", fmt.Errorf("read /api/vm/info after successful auth: %w", err)
+	}
+	if resp.Code != 0 {
+		return "", fmt.Errorf("read /api/vm/info rejected (code %d) %s", resp.Code, resp.Msg)
 	}
 	var info struct {
 		Application string `json:"application"`
 		IP          string `json:"ip"`
 		Mdns        string `json:"mdns"`
 	}
-	_ = json.Unmarshal(resp.Data, &info)
+	if err := json.Unmarshal(resp.Data, &info); err != nil {
+		return "", fmt.Errorf("decode /api/vm/info: %w", err)
+	}
 	parts := []string{"online"}
 	if info.Application != "" {
 		parts = append(parts, "fw "+info.Application)

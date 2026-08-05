@@ -5,15 +5,18 @@
 package transfer
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -54,9 +57,12 @@ func SCP(client *ssh.Client, src, dst string, recursive bool) error {
 }
 
 func download(sc *sftp.Client, remote, local string, recursive bool, alias string) error {
-	info, err := sc.Stat(remote)
+	info, err := sc.Lstat(remote)
 	if err != nil {
 		return fmt.Errorf("remote stat %s: %w", remote, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("remote symlink %s is not followed", remote)
 	}
 	if info.IsDir() {
 		if !recursive {
@@ -97,13 +103,12 @@ func downloadFile(sc *sftp.Client, remote, local, alias string) error {
 		return fmt.Errorf("remote open %s: %w", remote, err)
 	}
 	defer rf.Close()
-	lf, err := os.Create(local)
-	if err != nil {
-		return fmt.Errorf("local create %s: %w", local, err)
-	}
-	defer lf.Close()
 	start := time.Now()
-	n, err := io.Copy(lf, rf)
+	mode := os.FileMode(0o600)
+	if info, statErr := rf.Stat(); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	n, err := copyLocalAtomically(local, rf, mode)
 	if err != nil {
 		return fmt.Errorf("copy %s -> %s: %w", remote, local, err)
 	}
@@ -123,6 +128,9 @@ func downloadDir(sc *sftp.Client, remote, local, alias string) error {
 	for _, e := range entries {
 		rname := path(remote, e.Name())
 		lname := filepath.Join(local, e.Name())
+		if e.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("remote symlink %s is not followed during recursive download", rname)
+		}
 		if e.IsDir() {
 			if err := downloadDir(sc, rname, lname, alias); err != nil {
 				return err
@@ -137,9 +145,12 @@ func downloadDir(sc *sftp.Client, remote, local, alias string) error {
 }
 
 func upload(sc *sftp.Client, local, remote string, recursive bool, alias string) error {
-	info, err := os.Stat(local)
+	info, err := os.Lstat(local)
 	if err != nil {
 		return fmt.Errorf("local stat %s: %w", local, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("local symlink %s is not followed", local)
 	}
 	if info.IsDir() {
 		if !recursive {
@@ -159,19 +170,127 @@ func uploadFile(sc *sftp.Client, local, remote, alias string) error {
 		return fmt.Errorf("local open %s: %w", local, err)
 	}
 	defer lf.Close()
-	rf, err := sc.Create(remote)
+	tmp, err := remoteTempPath(remote)
 	if err != nil {
-		return fmt.Errorf("remote create %s: %w", remote, err)
+		return err
 	}
-	defer rf.Close()
+	rf, err := sc.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
+	if err != nil {
+		return fmt.Errorf("remote temp create %s: %w", tmp, err)
+	}
+	cleanup := func() {
+		_ = rf.Close()
+		_ = sc.Remove(tmp)
+	}
 	start := time.Now()
 	n, err := io.Copy(rf, lf)
 	if err != nil {
+		cleanup()
 		return fmt.Errorf("copy %s -> %s: %w", local, remote, err)
+	}
+	if err := rf.Sync(); err != nil && !sftpOperationUnsupported(err) {
+		cleanup()
+		return fmt.Errorf("sync remote temp %s: %w", tmp, err)
+	}
+	if err := rf.Close(); err != nil {
+		_ = sc.Remove(tmp)
+		return fmt.Errorf("close remote temp %s: %w", tmp, err)
+	}
+	if info, statErr := lf.Stat(); statErr == nil {
+		if err := sc.Chmod(tmp, info.Mode().Perm()); err != nil {
+			_ = sc.Remove(tmp)
+			return fmt.Errorf("chmod remote temp %s: %w", tmp, err)
+		}
+	}
+	if err := replaceRemoteAtomically(sc, tmp, remote); err != nil {
+		_ = sc.Remove(tmp)
+		return err
 	}
 	fmt.Fprintf(os.Stderr, "%s[sshmgr]%s %s%s%s -> %s%s%s  (%s, %s)\n", theme.ANSI(theme.Current.Primary), theme.Reset(), theme.ANSI(theme.Current.AccentB), local, theme.Reset(), theme.ANSI(theme.Current.AccentB), remote, theme.Reset(), formatBytes(n), time.Since(start).Round(time.Millisecond))
 	logXfer("up", alias, local, remote, n)
 	return nil
+}
+
+func copyLocalAtomically(dst string, src io.Reader, mode os.FileMode) (int64, error) {
+	dir := filepath.Dir(dst)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return 0, fmt.Errorf("create local parent %s: %w", dir, err)
+	}
+	tmp, err := os.CreateTemp(dir, ".sshmgr-transfer-*")
+	if err != nil {
+		return 0, fmt.Errorf("create local temp for %s: %w", dst, err)
+	}
+	tmpName := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}
+	n, err := io.Copy(tmp, src)
+	if err != nil {
+		cleanup()
+		return n, err
+	}
+	if err := tmp.Chmod(mode.Perm()); err != nil {
+		cleanup()
+		return n, err
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return n, err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return n, err
+	}
+	if err := os.Rename(tmpName, dst); err != nil {
+		_ = os.Remove(tmpName)
+		return n, fmt.Errorf("replace local destination %s: %w", dst, err)
+	}
+	return n, nil
+}
+
+func remoteTempPath(remote string) (string, error) {
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("generate remote temp name: %w", err)
+	}
+	return pathpkg.Join(pathpkg.Dir(remote), "."+pathpkg.Base(remote)+".sshmgr-"+hex.EncodeToString(random[:])), nil
+}
+
+func replaceRemoteAtomically(sc *sftp.Client, tmp, dst string) error {
+	if err := sc.PosixRename(tmp, dst); err == nil {
+		return nil
+	}
+	bak, err := remoteTempPath(dst + ".sshmgr-bak")
+	if err != nil {
+		return err
+	}
+	hadDestination := false
+	if _, err := sc.Stat(dst); err == nil {
+		hadDestination = true
+		if err := sc.Rename(dst, bak); err != nil {
+			return fmt.Errorf("stage existing remote destination %s: %w", dst, err)
+		}
+	}
+	if err := sc.Rename(tmp, dst); err != nil {
+		if hadDestination {
+			if restoreErr := sc.Rename(bak, dst); restoreErr != nil {
+				return fmt.Errorf("replace remote destination %s: %w; restoring original from %s also failed: %v", dst, err, bak, restoreErr)
+			}
+		}
+		return fmt.Errorf("replace remote destination %s: %w", dst, err)
+	}
+	if hadDestination {
+		if err := sc.Remove(bak); err != nil {
+			return fmt.Errorf("remote destination %s was replaced, but old backup %s could not be removed: %w", dst, bak, err)
+		}
+	}
+	return nil
+}
+
+func sftpOperationUnsupported(err error) bool {
+	var status *sftp.StatusError
+	return errors.As(err, &status) && status.FxCode() == sftp.ErrSSHFxOpUnsupported
 }
 
 func uploadDir(sc *sftp.Client, local, remote, alias string) error {
@@ -185,7 +304,14 @@ func uploadDir(sc *sftp.Client, local, remote, alias string) error {
 	for _, e := range entries {
 		lname := filepath.Join(local, e.Name())
 		rname := path(remote, e.Name())
-		if e.IsDir() {
+		info, err := os.Lstat(lname)
+		if err != nil {
+			return fmt.Errorf("local lstat %s: %w", lname, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("local symlink %s is not followed during recursive upload", lname)
+		}
+		if info.IsDir() {
 			if err := uploadDir(sc, lname, rname, alias); err != nil {
 				return err
 			}

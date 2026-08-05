@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 )
 
 func mustNano(t *testing.T, srvURL string) Provider {

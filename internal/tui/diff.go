@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"sshmgr/internal/exec"
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/exec"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/rivo/tview"
 )
@@ -28,11 +28,21 @@ type DiffOp struct {
 	Text string
 }
 
-// lineDiff returns the line-level edit script between a and b using a
-// straightforward LCS DP. O(n·m) — fine for the short remote outputs that
-// drift detection usually compares.
+const (
+	maxDiffCells = 2_000_000
+	maxDiffLines = 50_000
+)
+
+// lineDiff returns the line-level edit script between a and b. Small inputs
+// use exact LCS; large inputs use a linear-memory prefix/suffix fallback. The
+// fallback is intentionally less minimal, but prevents a hostile or accidental
+// many-line command result from allocating an n*m matrix and taking down the
+// TUI merely by opening its drift view.
 func lineDiff(a, b []string) []DiffOp {
 	n, m := len(a), len(b)
+	if n > 0 && m > maxDiffCells/n {
+		return linearLineDiff(a, b)
+	}
 	dp := make([][]int, n+1)
 	for i := range dp {
 		dp[i] = make([]int, m+1)
@@ -74,6 +84,34 @@ func lineDiff(a, b []string) []DiffOp {
 	}
 	for l, r := 0, len(ops)-1; l < r; l, r = l+1, r-1 {
 		ops[l], ops[r] = ops[r], ops[l]
+	}
+	return ops
+}
+
+func linearLineDiff(a, b []string) []DiffOp {
+	prefix := 0
+	for prefix < len(a) && prefix < len(b) && a[prefix] == b[prefix] {
+		prefix++
+	}
+	suffix := 0
+	for suffix < len(a)-prefix && suffix < len(b)-prefix &&
+		a[len(a)-1-suffix] == b[len(b)-1-suffix] {
+		suffix++
+	}
+	ops := make([]DiffOp, 0, len(a)+len(b))
+	for i := 0; i < prefix; i++ {
+		ops = append(ops, DiffOp{' ', i + 1, i + 1, a[i]})
+	}
+	for i := prefix; i < len(a)-suffix; i++ {
+		ops = append(ops, DiffOp{'-', i + 1, 0, a[i]})
+	}
+	for j := prefix; j < len(b)-suffix; j++ {
+		ops = append(ops, DiffOp{'+', 0, j + 1, b[j]})
+	}
+	for i := 0; i < suffix; i++ {
+		ai := len(a) - suffix + i
+		bi := len(b) - suffix + i
+		ops = append(ops, DiffOp{' ', ai + 1, bi + 1, a[ai]})
 	}
 	return ops
 }
@@ -142,7 +180,22 @@ func splitLines(s string) []string {
 	if s == "" {
 		return nil
 	}
-	return strings.Split(s, "\n")
+	lines := make([]string, 0, min(maxDiffLines, strings.Count(s, "\n")+1))
+	start := 0
+	for len(lines) < maxDiffLines {
+		i := strings.IndexByte(s[start:], '\n')
+		if i < 0 {
+			lines = append(lines, s[start:])
+			return lines
+		}
+		i += start
+		lines = append(lines, s[start:i])
+		start = i + 1
+	}
+	if start < len(s) {
+		lines = append(lines, fmt.Sprintf("[sshmgr: diff truncated after %d lines]", maxDiffLines))
+	}
+	return lines
 }
 
 // unifiedDiff renders a unified diff between baseLines and selLines. ctx is

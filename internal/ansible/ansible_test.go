@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 )
 
 func TestInventoryUnknownFormat(t *testing.T) {

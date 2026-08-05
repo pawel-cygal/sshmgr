@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 )
 
 // Print writes the completion script for shell ("bash"|"zsh"|"fish") to w.
@@ -64,9 +64,9 @@ func Suggest(w io.Writer, argv []string, word string) error {
 
 var subcommands = []string{
 	"ui", "list", "groups", "info", "add", "edit", "rm", "trust",
-	"theme", "keyring", "scp", "sftp", "files", "fwd", "exec", "watch",
+	"theme", "keyring", "scp", "sftp", "files", "fwd", "kvm", "exec", "watch",
 	"rotate-key", "import", "export", "playbook", "lint", "history",
-	"completion", "help",
+	"completion", "version", "help",
 }
 
 const bashScript = `# sshmgr bash completion. Add to ~/.bashrc:

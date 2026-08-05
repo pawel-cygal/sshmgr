@@ -5,9 +5,9 @@ import (
 	"sort"
 	"strings"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/snippets"
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/snippets"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"

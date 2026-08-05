@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 )
 
 // hasFinding reports whether findings contains one of the given severity
@@ -143,7 +143,7 @@ func TestLintSelfReferentialProxyCommand(t *testing.T) {
 		},
 		Hosts: map[string]config.HostConfig{
 			"bastion-eu": {Host: "bastion-eu", Groups: []string{"fleet"}},
-			"behind": {Host: "10.0.0.2", Groups: []string{"fleet"}},
+			"behind":     {Host: "10.0.0.2", Groups: []string{"fleet"}},
 		},
 	}
 	findings := Run(cfg)
@@ -154,5 +154,41 @@ func TestLintSelfReferentialProxyCommand(t *testing.T) {
 		if f.Scope == "behind" && strings.Contains(f.Message, "through itself") {
 			t.Errorf("behind sits behind the jump — must not be flagged: %+v", f)
 		}
+	}
+}
+
+func TestLintProxyJumpCycle(t *testing.T) {
+	cfg := &config.Config{Hosts: map[string]config.HostConfig{
+		"a": {Host: "10.0.0.1", ProxyJump: "b"},
+		"b": {Host: "10.0.0.2", ProxyJump: "c"},
+		"c": {Host: "10.0.0.3", ProxyJump: "a"},
+	}}
+	if !hasFinding(Run(cfg), SevError, "proxy_jump cycle") {
+		t.Fatalf("multi-host proxy cycle should be an error: %+v", Run(cfg))
+	}
+}
+
+func TestLintResolvedNetworkAndSecretSettings(t *testing.T) {
+	cfg := &config.Config{Hosts: map[string]config.HostConfig{
+		"bad": {
+			Host:     "10.0.0.1",
+			Port:     70000,
+			Password: "plaintext",
+			KVM: &config.KVMConfig{
+				Host:     "bad-kvm",
+				Scheme:   "ftp",
+				Password: "also-plaintext",
+			},
+		},
+	}}
+	findings := Run(cfg)
+	if !hasFinding(findings, SevError, "invalid SSH port") {
+		t.Errorf("invalid SSH port missing: %+v", findings)
+	}
+	if !hasFinding(findings, SevError, "invalid kvm scheme") {
+		t.Errorf("invalid KVM scheme missing: %+v", findings)
+	}
+	if !hasFinding(findings, SevWarn, "plaintext SSH password") || !hasFinding(findings, SevWarn, "plaintext KVM password") {
+		t.Errorf("plaintext secret findings missing: %+v", findings)
 	}
 }

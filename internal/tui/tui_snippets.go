@@ -5,9 +5,9 @@ import (
 	"sort"
 	"strings"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/snippets"
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/snippets"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -243,13 +243,15 @@ func (s *uiState) addSnippetPrompt(alias string) {
 			s.modal("name and command are required", func() { s.app.SetFocus(form) })
 			return
 		}
-		h := s.cfg.Hosts[alias]
+		next := s.cfg.Clone()
+		h := next.Hosts[alias]
 		h.Snippets = append(h.Snippets, config.Snippet{Name: name, Command: cmd, Description: desc})
-		s.cfg.Hosts[alias] = h
-		if err := config.Save(s.cfg, s.configPath); err != nil {
+		next.Hosts[alias] = h
+		if err := config.Save(next, s.configPath); err != nil {
 			s.modal("save failed: "+err.Error(), func() { s.app.SetFocus(form) })
 			return
 		}
+		s.cfg = next
 		s.pages.RemovePage("snippet-add")
 		s.focusList()
 	})
@@ -273,7 +275,8 @@ func (s *uiState) addSnippetPrompt(alias string) {
 }
 
 func (s *uiState) deleteSnippet(alias, name string) {
-	h := s.cfg.Hosts[alias]
+	next := s.cfg.Clone()
+	h := next.Hosts[alias]
 	out := make([]config.Snippet, 0, len(h.Snippets))
 	for _, sn := range h.Snippets {
 		if sn.Name != name {
@@ -285,10 +288,12 @@ func (s *uiState) deleteSnippet(alias, name string) {
 		return
 	}
 	h.Snippets = out
-	s.cfg.Hosts[alias] = h
-	if err := config.Save(s.cfg, s.configPath); err != nil {
+	next.Hosts[alias] = h
+	if err := config.Save(next, s.configPath); err != nil {
 		s.modal("save failed: "+err.Error(), nil)
+		return
 	}
+	s.cfg = next
 }
 
 // openPlaybookForm starts the two-step Ansible-playbook launcher: a

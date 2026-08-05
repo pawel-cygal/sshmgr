@@ -1,22 +1,25 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/external"
-	"sshmgr/internal/forwards"
-	"sshmgr/internal/fwd"
-	"sshmgr/internal/fwdregistry"
-	"sshmgr/internal/sshc"
-
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/external"
+	"github.com/systeampl/sshmgr/internal/forwards"
+	"github.com/systeampl/sshmgr/internal/fwd"
+	"github.com/systeampl/sshmgr/internal/fwdregistry"
+	"github.com/systeampl/sshmgr/internal/sshc"
 )
 
 func splitFwdArgs(args []string) (alias string, flagArgs []string) {
@@ -190,14 +193,22 @@ func runForward(cfg *config.Config, cfgPath string, h config.HostConfig, alias, 
 	if h.External {
 		backend = "external"
 	}
-	if _, cleanup, err := fwdregistry.Register(alias, typ, spec, backend, source); err == nil {
-		defer cleanup()
-	} else {
-		fmt.Fprintf(os.Stderr, "[sshmgr] could not register forward: %v\n", err)
+	cleanupRegistry := func() {}
+	defer func() { cleanupRegistry() }()
+	var readyOnce sync.Once
+	onReady := func() {
+		readyOnce.Do(func() {
+			if _, cleanup, err := fwdregistry.Register(alias, typ, spec, backend, source); err == nil {
+				cleanupRegistry = cleanup
+			} else {
+				fmt.Fprintf(os.Stderr, "[sshmgr] could not register forward: %v\n", err)
+			}
+			signalForwardReady()
+		})
 	}
 
 	if h.External {
-		cmdFwdExternal(cfg, cfgPath, h, alias, typ, spec)
+		cmdFwdExternal(cfg, cfgPath, h, alias, typ, spec, onReady)
 		return
 	}
 
@@ -214,19 +225,18 @@ func runForward(cfg *config.Config, cfgPath string, h config.HostConfig, alias, 
 	var runErr error
 	switch typ {
 	case "L":
-		runErr = fwd.Local(ctx, client, listen, target)
+		runErr = fwd.LocalReady(ctx, client, listen, target, onReady)
 	case "R":
-		runErr = fwd.Remote(ctx, client, listen, target)
+		runErr = fwd.RemoteReady(ctx, client, listen, target, onReady)
 	case "D":
-		runErr = fwd.Dynamic(ctx, client, listen)
+		runErr = fwd.DynamicReady(ctx, client, listen, onReady)
 	}
 
 	entry := config.ForwardEntry{
 		Alias: alias, Type: typ, Spec: spec,
 		LastUsed: time.Now().UTC().Format("2006-01-02"),
 	}
-	cfg.ForwardHistory = upsertForward(cfg.ForwardHistory, entry, 20)
-	if err := config.Save(cfg, cfgPath); err != nil {
+	if err := config.RecordForward(cfgPath, entry); err != nil {
 		fmt.Fprintf(os.Stderr, "[sshmgr] could not save forward history: %v\n", err)
 	}
 	if runErr != nil {
@@ -442,33 +452,127 @@ func runDetached(fwdArgs []string) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		fmt.Fprintf(os.Stderr, "[sshmgr] could not create %s: %v\n", dir, err)
 	}
-	logPath := filepath.Join(dir, "fwd-"+time.Now().UTC().Format("20060102-150405")+".log")
-	logF, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	logPath, logF, err := openDetachedLog(dir, time.Now().UTC())
 	if err != nil {
-		fatal("cannot open detach log " + logPath + ": " + err.Error())
+		fatal("cannot open detach log in " + dir + ": " + err.Error())
+	}
+	readyR, readyW, err := os.Pipe()
+	if err != nil {
+		_ = logF.Close()
+		fatal("cannot create detach readiness pipe: " + err.Error())
 	}
 	cmd := exec.Command(exe, append([]string{"fwd"}, fwdArgs...)...)
 	cmd.Stdin = nil
 	cmd.Stdout = logF
 	cmd.Stderr = logF
-	cmd.Env = append(os.Environ(), "SSHMGR_FWD_DAEMON=1")
+	cmd.Env = append(os.Environ(), "SSHMGR_FWD_DAEMON=1", "SSHMGR_FWD_READY_FD=3")
+	cmd.ExtraFiles = []*os.File{readyW}
 	// Setsid puts the child in a new session so the parent's controlling
 	// terminal is no longer wired to it — Ctrl-C in the parent shell will
 	// not propagate to the backgrounded forward.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
+		_ = readyR.Close()
+		_ = readyW.Close()
 		_ = logF.Close()
 		fatal("could not background the forward: " + err.Error())
 	}
-	fmt.Fprintf(os.Stderr, "[sshmgr] forward backgrounded — pid %d, log %s\n", cmd.Process.Pid, logPath)
+	_ = readyW.Close()
 	_ = logF.Close()
+	if err := waitDetachedReady(readyR, cmd, 35*time.Second); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		detail := detachedLogTail(logPath, 2048)
+		if detail != "" {
+			fatal(fmt.Sprintf("detached forward failed to become ready: %v\nlast log output:\n%s\nfull log: %s", err, detail, logPath))
+		}
+		fatal(fmt.Sprintf("detached forward failed to become ready: %v (log: %s)", err, logPath))
+	}
+	pid := cmd.Process.Pid
+	_ = cmd.Process.Release()
+	fmt.Fprintf(os.Stderr, "[sshmgr] forward ready in background — pid %d, log %s\n", pid, logPath)
+}
+
+func openDetachedLog(dir string, now time.Time) (string, *os.File, error) {
+	base := "fwd-" + now.Format("20060102-150405.000000000")
+	for i := 0; i < 1000; i++ {
+		name := base + ".log"
+		if i > 0 {
+			name = fmt.Sprintf("%s-%d.log", base, i)
+		}
+		path := filepath.Join(dir, name)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if os.IsExist(err) {
+			continue
+		}
+		return path, f, err
+	}
+	return "", nil, fmt.Errorf("could not allocate a unique log name")
+}
+
+func waitDetachedReady(r *os.File, cmd *exec.Cmd, timeout time.Duration) error {
+	defer r.Close()
+	type result struct {
+		line string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		line, err := bufio.NewReader(r).ReadString('\n')
+		ch <- result{line: strings.TrimSpace(line), err: err}
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case got := <-ch:
+		if got.line == "READY" {
+			return nil
+		}
+		if got.err != nil {
+			return fmt.Errorf("child exited before readiness: %w", got.err)
+		}
+		return fmt.Errorf("unexpected readiness response %q", got.line)
+	case <-timer.C:
+		return fmt.Errorf("startup timed out after %s (pid %d)", timeout, cmd.Process.Pid)
+	}
+}
+
+func signalForwardReady() {
+	fdText := os.Getenv("SSHMGR_FWD_READY_FD")
+	if fdText == "" {
+		return
+	}
+	fd, err := strconv.Atoi(fdText)
+	if err != nil || fd < 3 {
+		return
+	}
+	f := os.NewFile(uintptr(fd), "sshmgr-forward-ready")
+	if f == nil {
+		return
+	}
+	_, _ = fmt.Fprintln(f, "READY")
+	_ = f.Close()
+	_ = os.Unsetenv("SSHMGR_FWD_READY_FD")
+}
+
+func detachedLogTail(path string, limit int64) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	if st, err := f.Stat(); err == nil && st.Size() > limit {
+		_, _ = f.Seek(-limit, 2)
+	}
+	b, _ := io.ReadAll(io.LimitReader(f, limit))
+	return strings.TrimSpace(string(b))
 }
 
 // cmdFwdExternal runs `sshmgr fwd` for an external host via the system ssh
 // client (`ssh -N -L/-R/-D`). Exactly one of local/remote/dynamic is set
 // (the caller already enforced that). Specs are validated with the same
 // parsers as the native path, then forwarding history is recorded.
-func cmdFwdExternal(cfg *config.Config, cfgPath string, h config.HostConfig, alias, typ, spec string) {
+func cmdFwdExternal(cfg *config.Config, cfgPath string, h config.HostConfig, alias, typ, spec string, ready func()) {
 	fwdFlag := "-" + typ
 	recordLogin(alias, "fwd")
 	entry := config.ForwardEntry{
@@ -477,11 +581,10 @@ func cmdFwdExternal(cfg *config.Config, cfgPath string, h config.HostConfig, ali
 		Spec:     spec,
 		LastUsed: time.Now().UTC().Format("2006-01-02"),
 	}
-	cfg.ForwardHistory = upsertForward(cfg.ForwardHistory, entry, 20)
-	if err := config.Save(cfg, cfgPath); err != nil {
+	if err := config.RecordForward(cfgPath, entry); err != nil {
 		fmt.Fprintf(os.Stderr, "[sshmgr] could not save forward history: %v\n", err)
 	}
-	code, err := external.Run("ssh", external.FwdArgv(h, fwdFlag, spec))
+	code, err := external.RunWithReady("ssh", external.FwdArgv(h, fwdFlag, spec), time.Second, ready)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[sshmgr] fwd: %v\n", err)
 	}

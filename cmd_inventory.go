@@ -8,8 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"sshmgr/internal/config"
-
+	"github.com/systeampl/sshmgr/internal/config"
 )
 
 func cmdHistory(args []string) {
@@ -147,13 +146,12 @@ func cmdInfo(args []string) {
 		fatal("alias not found: " + alias)
 	}
 	out := struct {
-		Alias string             `json:"alias"`
+		Alias string            `json:"alias"`
 		Host  config.HostConfig `json:"host"`
-	}{Alias: alias, Host: h}
+	}{Alias: alias, Host: h.Redacted()}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(out); err != nil {
 		fatal(err.Error())
 	}
 }
-

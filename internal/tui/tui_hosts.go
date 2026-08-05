@@ -5,8 +5,9 @@ import (
 	"strconv"
 	"strings"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/forwards"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -37,6 +38,7 @@ func (s *uiState) openForm(originalAlias string, h config.HostConfig) {
 		becomeMethod = "sudo"
 	}
 	commands := strings.Join(h.Commands, "\n")
+	kvmEnabled := h.KVM != nil
 	var kvmHost, kvmScheme, kvmUser, kvmKeyring string
 	if h.KVM != nil {
 		kvmHost = h.KVM.Host
@@ -65,6 +67,7 @@ func (s *uiState) openForm(originalAlias string, h config.HostConfig) {
 	form.AddInputField("become user", becomeUser, 30, nil, func(v string) { becomeUser = strings.TrimSpace(v) })
 	form.AddDropDown("become method", []string{"sudo", "su"}, indexOf([]string{"sudo", "su"}, becomeMethod), func(v string, _ int) { becomeMethod = v })
 	form.AddTextArea("commands (one per line)", commands, 60, 6, 0, func(v string) { commands = v })
+	form.AddCheckbox("kvm configured", kvmEnabled, func(v bool) { kvmEnabled = v })
 	form.AddInputField("kvm host (ip/name)", kvmHost, 40, nil, func(v string) { kvmHost = strings.TrimSpace(v) })
 	form.AddInputField("kvm scheme (http/https)", kvmScheme, 12, nil, func(v string) { kvmScheme = strings.TrimSpace(v) })
 	form.AddInputField("kvm user", kvmUser, 20, nil, func(v string) { kvmUser = strings.TrimSpace(v) })
@@ -104,48 +107,88 @@ func (s *uiState) openForm(originalAlias string, h config.HostConfig) {
 			s.modal("alias and host are required", func() { s.app.SetFocus(form) })
 			return
 		}
-		if originalAlias != "" && alias != originalAlias {
-			delete(s.cfg.Hosts, originalAlias)
-			// Carry a multi-selection over to the renamed alias.
-			if s.multiSelected[originalAlias] {
-				delete(s.multiSelected, originalAlias)
-				s.multiSelected[alias] = true
-			}
+		if port < 1 || port > 65535 {
+			s.modal("port must be in range 1..65535", func() { s.app.SetFocus(form) })
+			return
 		}
-		if _, exists := s.cfg.Hosts[alias]; exists && originalAlias == "" {
+		if _, exists := s.cfg.Hosts[alias]; exists && alias != originalAlias {
 			s.modal(fmt.Sprintf("alias %q already exists", alias), func() { s.app.SetFocus(form) })
 			return
 		}
-		newHost := config.HostConfig{
-			Host:              host,
-			Port:              port,
-			User:              usr,
-			Key:               key,
-			AutoDuoPush:       autoDuo,
-			AutoAcceptHostKey: autoHostKey,
-			External:          external,
-			Pinned:            pinned,
-			ProxyJump:         proxyJump,
-			ProxyCommand:      strings.TrimSpace(proxyCommand),
-			Groups:            splitCSV(groups),
-			Tags:              splitCSV(tags),
-			Commands:          splitCommands(commands),
-		}
+
+		// Patch the existing raw host instead of rebuilding HostConfig. Rebuilding
+		// silently dropped every field the compact form does not expose (secret
+		// backends, login_steps, X11, agent forwarding, timeouts, snippets, etc.).
+		newHost := h
+		newHost.Host = host
+		newHost.Port = port
+		newHost.User = usr
+		newHost.Key = key
+		newHost.SetAutoDuoPush(autoDuo)
+		newHost.SetAutoAcceptHostKey(autoHostKey)
+		newHost.External = external
+		newHost.Pinned = pinned
+		newHost.ProxyJump = proxyJump
+		newHost.ProxyCommand = strings.TrimSpace(proxyCommand)
+		newHost.Groups = splitCSV(groups)
+		newHost.Tags = splitCSV(tags)
+		newHost.Commands = splitCommands(commands)
 		if becomeUser != "" {
 			newHost.Become = config.BecomeConfig{Method: becomeMethod, User: becomeUser}
+		} else {
+			newHost.Become = config.BecomeConfig{}
 		}
-		if kvmHost != "" {
-			newHost.KVM = &config.KVMConfig{
-				Host:            kvmHost,
-				Scheme:          kvmScheme,
-				User:            kvmUser,
-				PasswordKeyring: kvmKeyring,
+		if kvmEnabled {
+			kvm := config.KVMConfig{}
+			if h.KVM != nil {
+				kvm = *h.KVM
 			}
+			kvm.Host = kvmHost
+			kvm.Scheme = kvmScheme
+			kvm.User = kvmUser
+			kvm.PasswordKeyring = kvmKeyring
+			newHost.KVM = &kvm
+		} else {
+			newHost.KVM = nil
 		}
-		s.cfg.Hosts[alias] = newHost
-		if err := config.Save(s.cfg, s.configPath); err != nil {
+
+		// Build and persist a copy first. A failed CAS/save leaves the live TUI
+		// state untouched instead of half-applying a rename.
+		next := s.cfg.Clone()
+		if originalAlias != "" && alias != originalAlias {
+			if refs := forwards.FileAliasReferences(s.cfg, originalAlias); len(refs) > 0 {
+				s.modal(fmt.Sprintf("cannot rename %q; file libraries still reference it: %s", originalAlias, strings.Join(refs, ", ")), func() { s.app.SetFocus(form) })
+				return
+			}
+			delete(next.Hosts, originalAlias)
+			for name, other := range next.Hosts {
+				other.ProxyJump = renameJumpAlias(other.ProxyJump, originalAlias, alias)
+				other.ProxyCommand = config.RenameSSHJumpAlias(other.ProxyCommand, originalAlias, alias)
+				next.Hosts[name] = other
+			}
+			for name, profile := range next.Forwards {
+				if profile.Alias == originalAlias {
+					profile.Alias = alias
+					next.Forwards[name] = profile
+				}
+			}
+			for name, defaults := range next.Groups {
+				defaults.ProxyJump = renameJumpAlias(defaults.ProxyJump, originalAlias, alias)
+				defaults.ProxyCommand = config.RenameSSHJumpAlias(defaults.ProxyCommand, originalAlias, alias)
+				next.Groups[name] = defaults
+			}
+			newHost.ProxyJump = renameJumpAlias(newHost.ProxyJump, originalAlias, alias)
+			newHost.ProxyCommand = config.RenameSSHJumpAlias(newHost.ProxyCommand, originalAlias, alias)
+		}
+		next.Hosts[alias] = newHost
+		if err := config.Save(next, s.configPath); err != nil {
 			s.modal("save failed: "+err.Error(), func() { s.app.SetFocus(form) })
 			return
+		}
+		s.cfg = next
+		if originalAlias != "" && alias != originalAlias && s.multiSelected[originalAlias] {
+			delete(s.multiSelected, originalAlias)
+			s.multiSelected[alias] = true
 		}
 		closeForm()
 		s.refresh(alias)
@@ -158,6 +201,16 @@ func (s *uiState) openForm(originalAlias string, h config.HostConfig) {
 	s.app.SetFocus(form)
 }
 
+func renameJumpAlias(chain, oldAlias, newAlias string) string {
+	parts := strings.Split(chain, ",")
+	for i := range parts {
+		if strings.TrimSpace(parts[i]) == oldAlias {
+			parts[i] = newAlias
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
 // currentGroup returns the group name relevant to the current selection.
 // In tree mode: the name of the highlighted group node, or the parent group
 // of a highlighted host node. In flat mode: the primary group of the
@@ -168,18 +221,17 @@ func (s *uiState) addGroupPrompt() {
 		if name == "" {
 			return
 		}
-		if s.cfg.Groups == nil {
-			s.cfg.Groups = map[string]config.GroupDefaults{}
-		}
 		if _, exists := s.cfg.Groups[name]; exists {
 			s.modal(fmt.Sprintf("group %q already exists", name), nil)
 			return
 		}
-		s.cfg.Groups[name] = config.GroupDefaults{}
-		if err := config.Save(s.cfg, s.configPath); err != nil {
+		next := s.cfg.Clone()
+		next.Groups[name] = config.GroupDefaults{}
+		if err := config.Save(next, s.configPath); err != nil {
 			s.modal("save failed: "+err.Error(), nil)
 			return
 		}
+		s.cfg = next
 		s.refresh(s.currentAlias())
 	})
 }
@@ -199,13 +251,11 @@ func (s *uiState) renameGroupPrompt() {
 			s.modal(fmt.Sprintf("group %q already exists", newName), nil)
 			return
 		}
-		if s.cfg.Groups == nil {
-			s.cfg.Groups = map[string]config.GroupDefaults{}
-		}
-		s.cfg.Groups[newName] = s.cfg.Groups[current]
-		delete(s.cfg.Groups, current)
+		next := s.cfg.Clone()
+		next.Groups[newName] = next.Groups[current]
+		delete(next.Groups, current)
 		// Rewrite every host that referenced the old name.
-		for alias, h := range s.cfg.Hosts {
+		for alias, h := range next.Hosts {
 			changed := false
 			for i, g := range h.Groups {
 				if g == current {
@@ -214,13 +264,14 @@ func (s *uiState) renameGroupPrompt() {
 				}
 			}
 			if changed {
-				s.cfg.Hosts[alias] = h
+				next.Hosts[alias] = h
 			}
 		}
-		if err := config.Save(s.cfg, s.configPath); err != nil {
+		if err := config.Save(next, s.configPath); err != nil {
 			s.modal("save failed: "+err.Error(), nil)
 			return
 		}
+		s.cfg = next
 		s.refresh(s.currentAlias())
 	})
 }
@@ -257,11 +308,13 @@ func (s *uiState) deleteGroupPrompt() {
 			if label != "Delete" {
 				return
 			}
-			delete(s.cfg.Groups, current)
-			if err := config.Save(s.cfg, s.configPath); err != nil {
+			next := s.cfg.Clone()
+			delete(next.Groups, current)
+			if err := config.Save(next, s.configPath); err != nil {
 				s.modal("save failed: "+err.Error(), nil)
 				return
 			}
+			s.cfg = next
 			s.refresh("")
 		})
 	s.pages.AddPage("confirm", modal, true, true)
@@ -280,6 +333,11 @@ func (s *uiState) deleteGroupPrompt() {
 // under the cursor. ok is false when nothing is selectable. The args slice
 // is a {--host a,b} or {--group g} pair, ready to splice into extraArgs.
 func (s *uiState) confirmDelete(alias string) {
+	refs := append(s.cfg.AliasReferences(alias), forwards.FileAliasReferences(s.cfg, alias)...)
+	if len(refs) > 0 {
+		s.modal(fmt.Sprintf("cannot delete %q; still referenced by: %s", alias, strings.Join(refs, ", ")), nil)
+		return
+	}
 	modal := tview.NewModal().
 		SetText(fmt.Sprintf("Delete host %q?", alias)).
 		AddButtons([]string{"Delete", "Cancel"}).
@@ -293,12 +351,14 @@ func (s *uiState) confirmDelete(alias string) {
 			if label != "Delete" {
 				return
 			}
-			delete(s.cfg.Hosts, alias)
-			delete(s.multiSelected, alias)
-			if err := config.Save(s.cfg, s.configPath); err != nil {
+			next := s.cfg.Clone()
+			delete(next.Hosts, alias)
+			if err := config.Save(next, s.configPath); err != nil {
 				s.modal("save failed: "+err.Error(), nil)
 				return
 			}
+			s.cfg = next
+			delete(s.multiSelected, alias)
 			s.refresh("")
 		})
 	s.pages.AddPage("confirm", modal, true, true)

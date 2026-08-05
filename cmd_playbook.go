@@ -7,9 +7,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"sshmgr/internal/ansible"
-	"sshmgr/internal/config"
-
+	"github.com/systeampl/sshmgr/internal/ansible"
+	"github.com/systeampl/sshmgr/internal/config"
 )
 
 func cmdExport(args []string) {

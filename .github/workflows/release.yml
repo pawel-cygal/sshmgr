@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Verify tag and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]
+          go test ./...
+          git diff --exit-code
+      - name: Build release archives
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          source_epoch=$(git show -s --format=%ct "${COMMIT}")
+          [[ "${source_epoch}" =~ ^[0-9]+$ ]]
+          build_date=$(date -u -d "@${source_epoch}" +%Y-%m-%dT%H:%M:%SZ)
+          export SOURCE_DATE_EPOCH="${source_epoch}"
+          mkdir -p build dist
+          for platform in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            goos=${platform%/*}
+            goarch=${platform#*/}
+            name="sshmgr_${VERSION}_${goos}_${goarch}"
+            stage="build/${name}"
+            mkdir -p "${stage}"
+            CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" go build \
+              -buildvcs=false -trimpath \
+              -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildDate=${build_date}" \
+              -o "${stage}/sshmgr" .
+            mkdir -p "${stage}/scripts"
+            cp README.md LICENSE CHANGELOG.md SECURITY.md DEMO.md "${stage}/"
+            cp scripts/install-versioned.sh "${stage}/scripts/"
+            find "${stage}" -exec touch -d "@${source_epoch}" {} +
+            tar --sort=name --mtime="@${source_epoch}" --owner=0 --group=0 \
+              --numeric-owner -C build -cf - "${name}" | gzip -n >"dist/${name}.tar.gz"
+          done
+          (
+            cd dist
+            sha256sum ./*.tar.gz >SHA256SUMS
+          )
+          {
+            printf 'version=%s\n' "${VERSION}"
+            printf 'commit=%s\n' "${COMMIT}"
+            printf 'build_date=%s\n' "${build_date}"
+            go version
+            go list -m all
+          } >dist/BUILD-MANIFEST.txt
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/SHA256SUMS
+          dist/BUILD-MANIFEST.txt --verify-tag --generate-notes
+          --title "${GITHUB_REF_NAME}"

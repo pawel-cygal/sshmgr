@@ -6,8 +6,8 @@ import (
 	"runtime"
 	"strconv"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/secret"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/secret"
 )
 
 // ForHost builds the Provider for a resolved host's kvm block and returns the

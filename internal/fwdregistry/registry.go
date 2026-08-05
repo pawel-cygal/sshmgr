@@ -12,8 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -22,14 +24,18 @@ import (
 // Entry describes one live forward. The fields are stable JSON so a future
 // version of sshmgr can read entries left by an older one.
 type Entry struct {
-	ID        string    `json:"id"`
-	Alias     string    `json:"alias"`
-	Type      string    `json:"type"` // "L" | "R" | "D"
-	Spec      string    `json:"spec"`
-	PID       int       `json:"pid"`
-	StartedAt time.Time `json:"started_at"`
-	Backend   string    `json:"backend"` // "native" | "external"
-	Source    string    `json:"source"`  // "direct" | "saved:<name>" | "tui"
+	ID    string `json:"id"`
+	Alias string `json:"alias"`
+	Type  string `json:"type"` // "L" | "R" | "D"
+	Spec  string `json:"spec"`
+	PID   int    `json:"pid"`
+	// ProcessToken binds PID to one process incarnation (Linux start ticks or
+	// a portable ps identity). A recycled PID must never let `fwd stop` signal
+	// an unrelated process.
+	ProcessToken string    `json:"process_token"`
+	StartedAt    time.Time `json:"started_at"`
+	Backend      string    `json:"backend"` // "native" | "external"
+	Source       string    `json:"source"`  // "direct" | "saved:<name>" | "tui"
 }
 
 // StateDir returns the directory holding registry entries. Uses
@@ -56,10 +62,14 @@ func Register(alias, typ, spec, backend, source string) (Entry, func(), error) {
 		return Entry{}, func() {}, err
 	}
 	id := hex.EncodeToString(buf[:])
+	token, err := processToken(os.Getpid())
+	if err != nil {
+		return Entry{}, func() {}, fmt.Errorf("identify forward process: %w", err)
+	}
 	e := Entry{
 		ID: id, Alias: alias, Type: typ, Spec: spec,
 		PID: os.Getpid(), StartedAt: time.Now().UTC(),
-		Backend: backend, Source: source,
+		ProcessToken: token, Backend: backend, Source: source,
 	}
 	data, err := json.Marshal(e)
 	if err != nil {
@@ -99,7 +109,7 @@ func List() ([]Entry, error) {
 		if err := json.Unmarshal(data, &e); err != nil {
 			continue
 		}
-		if !IsAlive(e.PID) {
+		if !entryOwnsLiveProcess(e) {
 			_ = os.Remove(path)
 			continue
 		}
@@ -107,6 +117,43 @@ func List() ([]Entry, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.Before(out[j].StartedAt) })
 	return out, nil
+}
+
+func processToken(pid int) (string, error) {
+	if pid <= 0 {
+		return "", errors.New("invalid pid")
+	}
+	if data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat")); err == nil {
+		text := string(data)
+		end := strings.LastIndex(text, ")")
+		if end < 0 {
+			return "", errors.New("malformed /proc stat")
+		}
+		fields := strings.Fields(text[end+1:])
+		if len(fields) <= 19 {
+			return "", errors.New("short /proc stat")
+		}
+		return "proc-start:" + fields[19], nil
+	}
+	// macOS and other Unix platforms: lstart is stable for the process
+	// incarnation and command identifies the expected executable.
+	out, err := exec.Command("ps", "-o", "lstart=,comm=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return "", err
+	}
+	token := strings.TrimSpace(string(out))
+	if token == "" {
+		return "", errors.New("empty process identity")
+	}
+	return "ps:" + token, nil
+}
+
+func entryOwnsLiveProcess(e Entry) bool {
+	if e.ProcessToken == "" || !IsAlive(e.PID) {
+		return false
+	}
+	current, err := processToken(e.PID)
+	return err == nil && current == e.ProcessToken
 }
 
 // IsAlive reports whether pid still names a live process owned (or visible
@@ -159,6 +206,10 @@ func Find(idOrPrefix string) (Entry, error) {
 // returned error reports problems sending the signal or a process that
 // survived both signals.
 func Kill(e Entry, timeout time.Duration) error {
+	if !entryOwnsLiveProcess(e) {
+		_ = os.Remove(filepath.Join(StateDir(), e.ID+".json"))
+		return fmt.Errorf("refusing to signal pid %d: registry process identity is stale or unverifiable", e.PID)
+	}
 	proc, err := os.FindProcess(e.PID)
 	if err != nil {
 		return err
@@ -172,7 +223,7 @@ func Kill(e Entry, timeout time.Duration) error {
 	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if !IsAlive(e.PID) {
+		if !entryOwnsLiveProcess(e) {
 			_ = os.Remove(filepath.Join(StateDir(), e.ID+".json"))
 			return nil
 		}
@@ -180,10 +231,14 @@ func Kill(e Entry, timeout time.Duration) error {
 	}
 	// SIGTERM didn't take in time — escalate. Best-effort: the registry
 	// file goes regardless so a stuck process doesn't keep the entry alive.
+	if !entryOwnsLiveProcess(e) {
+		_ = os.Remove(filepath.Join(StateDir(), e.ID+".json"))
+		return nil
+	}
 	_ = proc.Signal(syscall.SIGKILL)
 	time.Sleep(100 * time.Millisecond)
 	_ = os.Remove(filepath.Join(StateDir(), e.ID+".json"))
-	if IsAlive(e.PID) {
+	if entryOwnsLiveProcess(e) {
 		return fmt.Errorf("pid %d did not exit after SIGTERM+SIGKILL", e.PID)
 	}
 	return nil

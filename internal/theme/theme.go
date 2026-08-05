@@ -34,12 +34,12 @@ type Palette struct {
 
 // PrimaryTag returns the tview color-tag form of Primary (e.g. "[aqua]")
 // suitable for inline use in TextView strings.
-func (p Palette) PrimaryTag() string  { return "[" + colorName(p.Primary) + "]" }
-func (p Palette) AccentBTag() string  { return "[" + colorName(p.AccentB) + "]" }
-func (p Palette) DimTag() string      { return "[" + colorName(p.Dim) + "]" }
-func (p Palette) HelpKeyTag() string  { return "[" + colorName(p.HelpKey) + "]" }
-func (p Palette) WarningTag() string  { return "[" + colorName(p.Warning) + "]" }
-func (p Palette) ErrorTag() string    { return "[" + colorName(p.Error) + "]" }
+func (p Palette) PrimaryTag() string { return "[" + colorName(p.Primary) + "]" }
+func (p Palette) AccentBTag() string { return "[" + colorName(p.AccentB) + "]" }
+func (p Palette) DimTag() string     { return "[" + colorName(p.Dim) + "]" }
+func (p Palette) HelpKeyTag() string { return "[" + colorName(p.HelpKey) + "]" }
+func (p Palette) WarningTag() string { return "[" + colorName(p.Warning) + "]" }
+func (p Palette) ErrorTag() string   { return "[" + colorName(p.Error) + "]" }
 
 // ColorTag returns the bare tview color-tag name for c (without brackets),
 // e.g. "aqua" or "#00ff41". Wrap it yourself: "[" + ColorTag(c) + "]".

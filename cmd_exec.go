@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"sshmgr/internal/config"
-	exec_ "sshmgr/internal/exec"
-	"sshmgr/internal/theme"
-	"sshmgr/internal/tui"
+	"github.com/systeampl/sshmgr/internal/config"
+	exec_ "github.com/systeampl/sshmgr/internal/exec"
+	"github.com/systeampl/sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/tui"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -52,6 +52,9 @@ func cmdExec(args []string) {
 				sel.Hosts = append(sel.Hosts, h)
 			}
 		}
+	}
+	if err := exec_.ValidateSelector(cfg, sel); err != nil {
+		fatal(err.Error())
 	}
 	aliases := exec_.Select(cfg, sel)
 	if len(aliases) == 0 {
@@ -205,9 +208,11 @@ func renderDrift(results []exec_.Result, groups []exec_.OutputGroup, ansi bool) 
 }
 
 // cmdImport pulls hosts into the config from an external source:
-//   sshmgr import ssh-config [path]      (default ~/.ssh/config)
-//   sshmgr import ansible <inventory>
-//   sshmgr import hosts <file>
+//
+//	sshmgr import ssh-config [path]      (default ~/.ssh/config)
+//	sshmgr import ansible <inventory>
+//	sshmgr import hosts <file>
+//
 // Common flags: --group <name>, --dry-run. Existing aliases are never
 // overwritten — only new ones are added.
 func cmdWatch(args []string) {
@@ -238,4 +243,3 @@ func cmdWatch(args []string) {
 		fatal(err.Error())
 	}
 }
-

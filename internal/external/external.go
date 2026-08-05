@@ -15,8 +15,9 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 )
 
 // Target is the `user@host` (or bare `host`) destination argument.
@@ -90,7 +91,10 @@ func SFTPArgv(h config.HostConfig) []string {
 // FwdArgv builds the ssh argv for port forwarding. flag is "-L", "-R" or
 // "-D"; -N keeps the connection open without a remote shell.
 func FwdArgv(h config.HostConfig, flag, spec string) []string {
-	argv := []string{"-N", flag, spec}
+	// Pin ExitOnForwardFailure before user options. OpenSSH uses the first
+	// value it obtains, so a detached parent cannot report success while a
+	// requested local/remote listener was rejected.
+	argv := []string{"-N", "-o", "ExitOnForwardFailure=yes", flag, spec}
 	argv = append(argv, connArgs(h, "-p")...)
 	return append(argv, Target(h))
 }
@@ -124,6 +128,16 @@ func RewriteRemoteSpec(spec, alias, target string) string {
 // wiring stdio to the current process. Returns the child's exit code (0 on
 // clean exit); a non-nil error means the binary could not be started.
 func Run(bin string, argv []string) (int, error) {
+	return RunWithReady(bin, argv, 0, nil)
+}
+
+// RunWithReady starts an external command and invokes ready only after it has
+// remained alive for readyDelay. For OpenSSH forwards, pair this with
+// ExitOnForwardFailure=yes: bind/request failures exit before the callback,
+// while an established -N session remains alive. Native forwards have an
+// exact listener callback; this delay is the best portable signal exposed by
+// the OpenSSH CLI without forcing it to fork away from sshmgr's PID registry.
+func RunWithReady(bin string, argv []string, readyDelay time.Duration, ready func()) (int, error) {
 	binPath, err := exec.LookPath(bin)
 	if err != nil {
 		return 0, fmt.Errorf("cannot find %s in PATH: %w", bin, err)
@@ -131,7 +145,29 @@ func Run(bin string, argv []string) (int, error) {
 	fmt.Fprintf(os.Stderr, "[sshmgr] external host — running: %s %s\n", bin, strings.Join(argv, " "))
 	cmd := exec.Command(binPath, argv...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return 1, err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	if ready != nil {
+		timer := time.NewTimer(readyDelay)
+		select {
+		case err = <-done:
+			timer.Stop()
+			return externalExit(err)
+		case <-timer.C:
+			ready()
+		}
+		err = <-done
+	} else {
+		err = <-done
+	}
+	return externalExit(err)
+}
+
+func externalExit(err error) (int, error) {
+	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			return ee.ExitCode(), nil
 		}
@@ -184,7 +220,7 @@ func RunCapturedContext(ctx context.Context, h config.HostConfig, command string
 		return "", 0, err
 	}
 	cmd := exec.CommandContext(ctx, binPath, capturedArgv(h, command)...)
-	var buf bytes.Buffer
+	buf := newCappedBuffer(32 << 20)
 	cmd.Stdout, cmd.Stderr = &buf, &buf
 	runErr := cmd.Run()
 	if runErr == nil {
@@ -194,6 +230,37 @@ func RunCapturedContext(ctx context.Context, h config.HostConfig, command string
 		return buf.String(), ee.ExitCode(), nil
 	}
 	return buf.String(), 0, runErr
+}
+
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func newCappedBuffer(limit int) cappedBuffer { return cappedBuffer{limit: limit} }
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	remaining := b.limit - b.buf.Len()
+	if remaining > 0 {
+		if remaining > len(p) {
+			remaining = len(p)
+		}
+		_, _ = b.buf.Write(p[:remaining])
+	}
+	if remaining < len(p) {
+		b.truncated = true
+	}
+	return n, nil
+}
+
+func (b *cappedBuffer) String() string {
+	out := b.buf.String()
+	if b.truncated {
+		out += fmt.Sprintf("\n[sshmgr: output truncated after %d bytes]\n", b.limit)
+	}
+	return out
 }
 
 // RunCaptured is RunCapturedContext with no timeout. Used by `watch`.

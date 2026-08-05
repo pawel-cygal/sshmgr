@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/config"
 
 	"github.com/zalando/go-keyring"
 )
@@ -128,5 +128,23 @@ func TestPasswordCmdSingleflightDedupesConcurrent(t *testing.T) {
 	}
 	if n := strings.Count(string(data), "x"); n != 1 {
 		t.Errorf("singleflight must collapse concurrent calls to one run; ran %d times", n)
+	}
+}
+
+func TestPasswordCmdCacheCanBeDisabled(t *testing.T) {
+	t.Setenv("SSHMGR_PASSWORD_CACHE_TTL", "0")
+	marker := filepath.Join(t.TempDir(), "runs")
+	cmd := fmt.Sprintf("echo x >> %s; echo uncached-secret", marker)
+	for i := 0; i < 2; i++ {
+		if got, err := ResolveSpec(Spec{Cmd: cmd}); err != nil || got != "uncached-secret" {
+			t.Fatalf("resolve %d: got %q err=%v", i, got, err)
+		}
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(data), "x"); n != 2 {
+		t.Fatalf("disabled cache ran command %d times, want 2", n)
 	}
 }

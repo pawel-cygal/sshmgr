@@ -6,12 +6,11 @@ import (
 	"os"
 	"strings"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/external"
-	"sshmgr/internal/sshc"
-	"sshmgr/internal/transfer"
-	"sshmgr/internal/tui"
-
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/external"
+	"github.com/systeampl/sshmgr/internal/sshc"
+	"github.com/systeampl/sshmgr/internal/transfer"
+	"github.com/systeampl/sshmgr/internal/tui"
 )
 
 func humanBytes(n int64) string { return transfer.HumanBytes(n) }
@@ -137,4 +136,3 @@ func remoteAlias(spec string) string {
 	}
 	return ""
 }
-

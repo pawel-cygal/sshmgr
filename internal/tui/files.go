@@ -12,9 +12,9 @@ import (
 	"syscall"
 	"time"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/theme"
-	"sshmgr/internal/transfer"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/transfer"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/pkg/sftp"
@@ -92,6 +92,10 @@ func RunFiles(client *ssh.Client, alias string) error {
 				}
 				return nil
 			case tcell.KeyEsc, tcell.KeyF10:
+				if atomic.LoadInt32(&fm.running) > 0 {
+					fm.flash("transfer still running — wait before quitting")
+					return nil
+				}
 				app.Stop()
 				return nil
 			case tcell.KeyBackspace, tcell.KeyBackspace2:
@@ -112,6 +116,10 @@ func RunFiles(client *ssh.Client, alias string) error {
 			}
 			switch event.Rune() {
 			case 'q':
+				if atomic.LoadInt32(&fm.running) > 0 {
+					fm.flash("transfer still running — wait before quitting")
+					return nil
+				}
 				app.Stop()
 				return nil
 			case 'h':
@@ -545,6 +553,10 @@ func (fm *fileManager) copy() {
 		fm.flash("can't copy '..'")
 		return
 	}
+	// Snapshot both roots before launching the worker. Navigation remains
+	// available during a transfer, so reading fm.*Cwd inside the goroutine can
+	// otherwise race and copy to a directory selected after F5 was pressed.
+	localCwd, remoteCwd := fm.localCwd, fm.remoteCwd
 
 	go func() {
 		atomic.AddInt32(&fm.running, 1)
@@ -556,20 +568,20 @@ func (fm *fileManager) copy() {
 		var err error
 		switch {
 		case src == panelLocal && !entry.isDir:
-			srcPath := filepath.Join(fm.localCwd, entry.name)
-			dstPath := remoteJoin(fm.remoteCwd, entry.name)
+			srcPath := filepath.Join(localCwd, entry.name)
+			dstPath := remoteJoin(remoteCwd, entry.name)
 			err = transfer.UploadFile(fm.sc, srcPath, dstPath, fm.alias)
 		case src == panelLocal && entry.isDir:
-			srcPath := filepath.Join(fm.localCwd, entry.name)
-			dstPath := remoteJoin(fm.remoteCwd, entry.name)
+			srcPath := filepath.Join(localCwd, entry.name)
+			dstPath := remoteJoin(remoteCwd, entry.name)
 			err = transfer.UploadDir(fm.sc, srcPath, dstPath, fm.alias)
 		case src == panelRemote && !entry.isDir:
-			srcPath := remoteJoin(fm.remoteCwd, entry.name)
-			dstPath := filepath.Join(fm.localCwd, entry.name)
+			srcPath := remoteJoin(remoteCwd, entry.name)
+			dstPath := filepath.Join(localCwd, entry.name)
 			err = transfer.DownloadFile(fm.sc, srcPath, dstPath, fm.alias)
 		case src == panelRemote && entry.isDir:
-			srcPath := remoteJoin(fm.remoteCwd, entry.name)
-			dstPath := filepath.Join(fm.localCwd, entry.name)
+			srcPath := remoteJoin(remoteCwd, entry.name)
+			dstPath := filepath.Join(localCwd, entry.name)
 			err = transfer.DownloadDir(fm.sc, srcPath, dstPath, fm.alias)
 		}
 		fm.app.QueueUpdateDraw(func() {
@@ -750,8 +762,8 @@ func (fm *fileManager) syncPrompt() {
 }
 
 type syncEntry struct {
-	rel  string // path relative to srcRoot
-	kind string // "+ " new on dest, "~ " size differs
+	rel   string // path relative to srcRoot
+	kind  string // "+ " new on dest, "~ " size differs
 	isDir bool
 }
 

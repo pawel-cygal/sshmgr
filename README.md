@@ -1,5 +1,7 @@
 # sshmgr
 
+[![CI](https://github.com/systeampl/sshmgr/actions/workflows/ci.yml/badge.svg)](https://github.com/systeampl/sshmgr/actions/workflows/ci.yml)
+
 A modern SSH connection manager for the terminal — full CLI + TUI for
 DevOps and SRE workflows: jump hosts, Duo MFA, password vaults, port
 forwarding, file transfer, parallel fleet command execution, and Ansible
@@ -39,8 +41,9 @@ have:
   from the CLI as `sshmgr <alias> :<name>`.
 - **Session recording** — opt-in tee of the remote shell to a per-session
   log file for audit / replay.
-- **`sshmgr lint`** — finds broken proxy_jump refs, missing key files,
-  undefined groups, snippet collisions before you hit them at connect time.
+- **`sshmgr lint`** — finds broken/cyclic proxy paths, invalid ports and KVM
+  endpoints, plaintext secrets, missing key files, undefined groups, malformed
+  snippets and forward profiles before you hit them at runtime.
 - **Ansible integration** — `export ansible` turns the fleet into an
   inventory (resolving bastion chains and proxy hops for you); `playbook`
   runs `ansible-playbook` against any selector.
@@ -48,15 +51,47 @@ have:
 
 ## Install
 
+After the first release tag is published, install the latest version directly:
+
 ```bash
-git clone https://github.com/pawel-cygal/sshmgr.git
+go install github.com/systeampl/sshmgr@latest
+```
+
+Or build the current branch from source:
+
+```bash
+git clone https://github.com/systeampl/sshmgr.git
 cd sshmgr
 go build -o sshmgr .
 sudo install -m 0755 sshmgr /usr/local/bin/sshmgr
 ```
 
-Requirements: Go 1.26+, Linux or macOS. Windows works in theory (uses
-`golang.org/x/crypto/ssh` and `tview`) but isn't tested.
+For a versioned installation that preserves the active binary for rollback:
+
+```bash
+go build -o sshmgr .
+sudo ./scripts/install-versioned.sh install ./sshmgr v0.1.0
+sudo ./scripts/install-versioned.sh status
+sudo ./scripts/install-versioned.sh rollback
+```
+
+The installer stores immutable, named binaries in `/usr/local/lib/sshmgr`,
+switches `/usr/local/bin/sshmgr` atomically, records the previous exact target,
+and never deletes retained versions. Use `activate <version-label>` to switch
+to any already installed version. Release archives include this installer under
+`scripts/`, together with the demo, changelog, security policy, and checksums.
+Each installation also preserves a standalone helper, so rollback remains:
+
+```bash
+sudo /usr/local/lib/sshmgr/install-versioned.sh rollback
+```
+
+even when the source checkout or extracted release directory is gone.
+
+Requirements: Go 1.26+, Linux or macOS. Windows is not currently supported;
+the process registry, signal handling, detached forwards, and PTY resize path
+use Unix APIs. X11 forwarding additionally requires `xauth` and a local X
+server (XQuartz on macOS).
 
 ## Quick start
 
@@ -115,6 +150,8 @@ sshmgr fwd ls / run NAME / add NAME / rm NAME / active / stop ID
                             manage saved forward profiles; `active` lists
                             tunnels currently live, `stop` terminates one
                             by ID (full or short prefix)
+sshmgr kvm <alias> <reset|power|off|web|status> [--yes]
+                            control the host's out-of-band KVM
 sshmgr exec [--group G | --tag T | --host a,b | --all] [-p N] [--diff] <cmd…>
                             run a command across many hosts; --diff groups
                             identical output (drift), --dry-run lists targets,
@@ -132,6 +169,7 @@ sshmgr export ansible [--format yaml|ini] [selectors] [--out path]
 sshmgr playbook <file> [selectors] [--check] [--diff] [--limit E] [--extra-vars V]
                             run an Ansible playbook against selected hosts
 sshmgr lint [--json]        validate config (groups, refs, keys, snippets)
+sshmgr version [--json]     print version, commit, build time and platform
 sshmgr history [transfers|forwards|logins]
                             show recent activity
 sshmgr completion <shell>   emit shell completion (bash | zsh | fish)
@@ -474,11 +512,12 @@ groups:
     password_cmd: 'op read "op://Infra/{{alias}}/password"'
 ```
 
-**Caching.** A `password_cmd` result is memoised for the lifetime of
-the process: a fleet `exec` — or a long TUI session — invokes the
-secret CLI (and any biometric prompt) only once per distinct resolved
-command line. Concurrent hosts sharing one command line share a single
-run.
+**Caching.** A successful `password_cmd` result is memoised for five minutes:
+a fleet `exec` invokes the secret CLI (and any biometric prompt) only once per
+distinct resolved command line, while a long TUI does not retain a stale
+credential forever. Concurrent callers share one in-flight run. Override the
+TTL with `SSHMGR_PASSWORD_CACHE_TTL=30s`; set it to `0` to disable the
+successful-result cache.
 
 ### Login steps
 
@@ -732,12 +771,14 @@ busy: …` instead of racing the SSH handshake.
 #### Background mode (`-d` / `--detach`)
 
 Add `-d` to a direct forward (or to `sshmgr fwd run`) and sshmgr spawns
-itself in a new session, redirects stdio to a log file, prints the PID
-and returns immediately:
+itself in a new session, redirects stdio to a unique log file, and waits for
+the listener to become ready before printing the PID and returning. A bind,
+authentication, or forwarding-request failure is therefore reported to the
+caller instead of producing a dead background process:
 
 ```bash
 sshmgr fwd bastion -D 1080 -d
-# [sshmgr] forward backgrounded — pid 12345, log /home/you/.local/state/sshmgr/fwd-logs/fwd-20260523-141530.log
+# [sshmgr] forward ready in background — pid 12345, log /home/you/.local/state/sshmgr/fwd-logs/fwd-20260523-141530.123456789.log
 
 sshmgr fwd run grafana -d
 ```
@@ -824,6 +865,13 @@ sshmgr history transfers     # last 200 scp/sftp copies
 sshmgr history forwards      # recent port forwards
 sshmgr history logins        # recent connects / sftp / files / fwd / exec
 ```
+
+History is runtime state, not inventory. It is written atomically under
+`$XDG_STATE_HOME/sshmgr/state.yaml` (default
+`~/.local/state/sshmgr/state.yaml`) and can be overridden with
+`SSHMGR_STATE`. When `SSHMGR_CONFIG` points at a custom file, the default state
+file is `<config>.state.yaml`. This separation prevents concurrent SSH,
+transfer, and forward processes from overwriting manual config edits.
 
 ### Run a command across many hosts
 
@@ -1067,8 +1115,8 @@ a different playbook without leaving the manager flow.
 
 ### SSH key rotation
 
-`sshmgr rotate-key` rolls a new SSH key across a fleet **without any risk
-of locking yourself out**. The safety contract: an old key is never
+`sshmgr rotate-key` minimizes lockout risk while rolling a new SSH key across
+a fleet. The safety contract: an old key is never
 removed from a host until a brand-new, independent connection — using
 **only the new key** — has been proven to work.
 
@@ -1093,12 +1141,22 @@ Per host, in order:
    normal proxy chain, authenticating with **only** the new key — no
    password, no keyboard-interactive, no fallback to the old key. Run
    `true`.
-4. Only if verification passed *and* `--remove-old` is set: reconnect
-   and remove the old key line (matched on the key blob, so a differing
-   comment doesn't matter).
+4. Only if verification passed *and* `--remove-old` is set: atomically save
+   the new key path in the local config, reconnect with that exact key, and
+   remove the old key line (matched on the key blob, so a differing comment
+   doesn't matter).
 
-If **any** step fails — append, permissions, verification — that host
-is left exactly as it was, old key intact, and the failure is reported.
+If verification fails after sshmgr appended a key, the original
+`authorized_keys` content is restored. If saving the local config fails, the
+old remote key is not removed. Encrypted private keys are supported through
+`ssh-agent`; keep the standard `<private-key>.pub` sidecar and load the key
+with `ssh-add` first. Key-only verification selects only the matching signer,
+never another identity from the agent.
+
+If **any** step fails — append, permissions, verification, config save, or old
+key removal — the failure is reported and the command exits non-zero. The
+ordering ensures there is always a verified configured key before the old one
+can be removed.
 `rotate-key` exits non-zero if any host failed.
 
 ```
@@ -1396,14 +1454,14 @@ sshmgr lint
 
 Reports:
 
-- **errors**: broken `proxy_jump` references, missing key files when no
-  password backend is set
-- **warnings**: undefined groups referenced by hosts, snippet name
-  collisions, missing key files with password fallback, a
-  `proxy_command` / `proxy_jump` that routes a host through itself
-- **info**: defined-but-unused groups, dead `auto_duo_push` on external
-  hosts, `proxy_command` ssh targets not configured as sshmgr aliases
-  (probably fine if they live in `~/.ssh/config`)
+- **errors**: broken or cyclic `proxy_jump` references, invalid host/port and
+  timeout values, invalid KVM endpoints/types, missing sole key files,
+  malformed snippet/forward libraries and invalid saved forwards
+- **warnings**: undefined groups, plaintext SSH/KVM/escalation secrets,
+  snippet collisions, missing key files with a password fallback, and
+  self-referential proxy routes
+- **info**: unused groups and settings that are ignored by the selected
+  external/native backend
 
 Exits with code 1 on any **error** so it's safe to use in CI.
 
@@ -1419,6 +1477,12 @@ Exits with code 1 on any **error** so it's safe to use in CI.
 - **Passwords** live in the OS keyring, in environment variables, or come
   from external commands (`pass`, `bw`, `op`, `vault`). Plaintext
   `password:` field is supported but actively discouraged.
+- **Agent/X11 forwarding extends trust to the remote host.** Enable either
+  only for machines you trust; agent forwarding does not copy the private key,
+  but a privileged remote process can use the forwarded agent while connected.
+- **Session and transfer history can contain sensitive operational data.**
+  Runtime history is stored mode `0600` under the XDG state directory; session
+  recordings are also mode `0600` and should be retained like audit logs.
 - **No long-running daemon.** sshmgr is single-shot by default — ping
   rounds run inside the TUI process and stop when you quit. The one
   exception is `sshmgr fwd -d` (and the TUI's auto-detach for
@@ -1497,6 +1561,9 @@ main.go           CLI dispatcher
 - [ ] Bitwarden / 1Password / Vault first-class integrations (today: via
   `password_cmd`).
 - [ ] Windows testing & packaging.
+
+Release-facing changes are tracked in [CHANGELOG.md](CHANGELOG.md). Security
+reports should follow [SECURITY.md](SECURITY.md).
 
 ## License
 

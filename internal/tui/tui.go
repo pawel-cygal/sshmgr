@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	"sshmgr/internal/banner"
-	"sshmgr/internal/config"
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/banner"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -328,7 +328,7 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 
 	state.refresh("")
 
-	stopPing := startPinger(cfg, state.pings, func() {
+	stopPing := startPinger(state.pings, func() {
 		app.QueueUpdateDraw(func() { state.refresh(state.currentAlias()) })
 	})
 	defer stopPing()

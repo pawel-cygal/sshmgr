@@ -18,10 +18,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/external"
-	"sshmgr/internal/sshc"
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/external"
+	"github.com/systeampl/sshmgr/internal/sshc"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/gdamore/tcell/v2"
 	"golang.org/x/crypto/ssh"
@@ -30,10 +30,45 @@ import (
 // Selector picks hosts from cfg.Hosts. Empty selector matches nothing —
 // callers must explicitly request --all if they want every alias.
 type Selector struct {
-	Group   string   // match hosts in this group (after ResolveHost merge)
-	Tag     string   // match hosts with this tag
-	Hosts   []string // explicit alias list
-	All     bool     // match every alias in cfg
+	Group string   // match hosts in this group (after ResolveHost merge)
+	Tag   string   // match hosts with this tag
+	Hosts []string // explicit alias list
+	All   bool     // match every alias in cfg
+}
+
+// ValidateSelector prevents ambiguous fleet scope. A destructive command must
+// never silently let --all override a misspelled --host, or pick one of
+// --group/--tag based on switch ordering.
+func ValidateSelector(cfg *config.Config, s Selector) error {
+	count := 0
+	if s.Group != "" {
+		count++
+	}
+	if s.Tag != "" {
+		count++
+	}
+	if len(s.Hosts) > 0 {
+		count++
+	}
+	if s.All {
+		count++
+	}
+	if count != 1 {
+		return fmt.Errorf("specify exactly one selector: --group, --tag, --host, or --all")
+	}
+	if len(s.Hosts) > 0 {
+		var unknown []string
+		for _, alias := range s.Hosts {
+			if _, ok := cfg.Hosts[alias]; !ok {
+				unknown = append(unknown, alias)
+			}
+		}
+		if len(unknown) > 0 {
+			sort.Strings(unknown)
+			return fmt.Errorf("unknown host alias(es): %s", strings.Join(unknown, ", "))
+		}
+	}
+	return nil
 }
 
 // Select returns the alphabetically-sorted aliases matching s.
@@ -75,8 +110,8 @@ type Options struct {
 	Parallel int           // max concurrent hosts (<=0 → 8)
 	Timeout  time.Duration // per-attempt timeout (0 → no limit)
 	Retry    int           // extra attempts for a failed host (0 → try once)
-	FailFast bool           // stop launching new hosts once one has failed
-	Quiet    bool           // suppress live [alias] streaming (machine-readable mode)
+	FailFast bool          // stop launching new hosts once one has failed
+	Quiet    bool          // suppress live [alias] streaming (machine-readable mode)
 }
 
 // Run executes cmd on each alias, bounded by opts.Parallel. Unless opts.Quiet
@@ -249,29 +284,47 @@ func runOne(ctx context.Context, cfg *config.Config, alias, cmd string, quiet bo
 	}
 	defer session.Close()
 
-	var combined bytes.Buffer
+	combined := newCappedBuffer(32 << 20)
 	pr, pw := io.Pipe()
 	session.Stdout = pw
 	session.Stderr = pw
-	streamDone := make(chan struct{})
+	streamDone := make(chan error, 1)
 	go func() {
-		defer close(streamDone)
-		// bufio.Scanner so a line spanning two reads doesn't print as two
-		// `[alias]`-prefixed fragments. Combined buffer captures bytes
-		// verbatim for the final Result.
+		// ReadSlice keeps the live-render buffer bounded. A very long logical line
+		// is rendered in 64 KiB fragments, but is still drained completely and is
+		// captured verbatim (up to cappedBuffer's result limit).
 		tee := io.TeeReader(pr, &combined)
-		sc := bufio.NewScanner(tee)
-		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		for sc.Scan() {
-			emit(theme.Current.Text, sc.Text())
+		reader := bufio.NewReaderSize(tee, 64*1024)
+		for {
+			fragment, err := reader.ReadSlice('\n')
+			if len(fragment) > 0 {
+				emit(theme.Current.Text, strings.TrimSuffix(string(fragment), "\n"))
+			}
+			if errors.Is(err, bufio.ErrBufferFull) {
+				continue
+			}
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					streamDone <- nil
+				} else {
+					streamDone <- err
+				}
+				return
+			}
 		}
 	}()
 
 	err = session.Run(cmd)
 	pw.Close()
-	<-streamDone
+	readErr := <-streamDone
 
 	r.Output = combined.String()
+	if readErr != nil {
+		r.Err = fmt.Errorf("read command output: %w", readErr)
+		r.ExitCode = 1
+		r.FailedStage = "command"
+		return r
+	}
 	if err == nil {
 		r.ExitCode = 0
 		return r
@@ -285,6 +338,37 @@ func runOne(ctx context.Context, cfg *config.Config, alias, cmd string, quiet bo
 	r.ExitCode = 1
 	r.FailedStage = "command"
 	return r
+}
+
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func newCappedBuffer(limit int) cappedBuffer { return cappedBuffer{limit: limit} }
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	remaining := b.limit - b.buf.Len()
+	if remaining > 0 {
+		if remaining > len(p) {
+			remaining = len(p)
+		}
+		_, _ = b.buf.Write(p[:remaining])
+	}
+	if remaining < len(p) {
+		b.truncated = true
+	}
+	return n, nil
+}
+
+func (b *cappedBuffer) String() string {
+	out := b.buf.String()
+	if b.truncated {
+		out += fmt.Sprintf("\n[sshmgr: output truncated after %d bytes]\n", b.limit)
+	}
+	return out
 }
 
 func writeLine(alias string, lineColor tcell.Color, line string) {

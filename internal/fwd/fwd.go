@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/armon/go-socks5"
 	"golang.org/x/crypto/ssh"
@@ -28,6 +28,12 @@ import (
 // tunneled through client to targetAddr (host:port). Blocks until ctx is
 // cancelled or a fatal error occurs.
 func Local(ctx context.Context, client *ssh.Client, listenAddr, targetAddr string) error {
+	return LocalReady(ctx, client, listenAddr, targetAddr, nil)
+}
+
+// LocalReady is Local with a callback invoked after the local listener is
+// bound. Detached-mode startup uses it to acknowledge actual readiness.
+func LocalReady(ctx context.Context, client *ssh.Client, listenAddr, targetAddr string, ready func()) error {
 	if !strings.Contains(listenAddr, ":") {
 		listenAddr = "127.0.0.1:" + listenAddr
 	}
@@ -36,6 +42,9 @@ func Local(ctx context.Context, client *ssh.Client, listenAddr, targetAddr strin
 		return fmt.Errorf("local listen %s: %w", listenAddr, err)
 	}
 	defer ln.Close()
+	if ready != nil {
+		ready()
+	}
 	fmt.Fprintf(os.Stderr, "%s[sshmgr]%s -L %s%s%s -> %s%s%s (Ctrl-C to stop)\n",
 		ansiPrimary(), reset(), ansiAccent(), ln.Addr(), reset(),
 		ansiAccent(), targetAddr, reset())
@@ -71,14 +80,23 @@ func Local(ctx context.Context, client *ssh.Client, listenAddr, targetAddr strin
 // connection is forwarded through the client to localTarget on the local
 // machine. Mirrors `ssh -R listenAddr:localTarget`.
 func Remote(ctx context.Context, client *ssh.Client, listenAddr, localTarget string) error {
+	return RemoteReady(ctx, client, listenAddr, localTarget, nil)
+}
+
+// RemoteReady is Remote with a callback invoked after the SSH server accepts
+// the remote listener.
+func RemoteReady(ctx context.Context, client *ssh.Client, listenAddr, localTarget string, ready func()) error {
 	if !strings.Contains(listenAddr, ":") {
-		listenAddr = "0.0.0.0:" + listenAddr
+		listenAddr = "127.0.0.1:" + listenAddr
 	}
 	ln, err := client.Listen("tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("remote listen %s: %w", listenAddr, err)
 	}
 	defer ln.Close()
+	if ready != nil {
+		ready()
+	}
 	fmt.Fprintf(os.Stderr, "%s[sshmgr]%s -R remote:%s%s%s -> local:%s%s%s (Ctrl-C to stop)\n",
 		ansiPrimary(), reset(), ansiAccent(), listenAddr, reset(),
 		ansiAccent(), localTarget, reset())
@@ -127,6 +145,12 @@ func isTransientAcceptErr(err error) bool {
 // through client, so the local machine effectively browses the remote network
 // (use as a browser SOCKS proxy to reach internal services).
 func Dynamic(ctx context.Context, client *ssh.Client, listenAddr string) error {
+	return DynamicReady(ctx, client, listenAddr, nil)
+}
+
+// DynamicReady is Dynamic with a callback invoked after the SOCKS listener is
+// bound.
+func DynamicReady(ctx context.Context, client *ssh.Client, listenAddr string, ready func()) error {
 	if !strings.Contains(listenAddr, ":") {
 		listenAddr = "127.0.0.1:" + listenAddr
 	}
@@ -145,6 +169,9 @@ func Dynamic(ctx context.Context, client *ssh.Client, listenAddr string) error {
 		return fmt.Errorf("socks listen %s: %w", listenAddr, err)
 	}
 	defer ln.Close()
+	if ready != nil {
+		ready()
+	}
 	fmt.Fprintf(os.Stderr, "%s[sshmgr]%s -D SOCKS5 proxy on %s%s%s — set browser socks5://%s%s%s (Ctrl-C to stop)\n",
 		ansiPrimary(), reset(), ansiAccent(), ln.Addr(), reset(),
 		ansiAccent(), ln.Addr(), reset())
@@ -161,22 +188,34 @@ func Dynamic(ctx context.Context, client *ssh.Client, listenAddr string) error {
 //	8080:remote:3306                          -> 127.0.0.1:8080 -> remote:3306
 //	127.0.0.1:8080:remote:3306                -> 127.0.0.1:8080 -> remote:3306
 func ParseLocalSpec(spec string) (listen, target string, err error) {
-	parts := strings.Split(spec, ":")
+	parts, splitErr := splitBracketed(spec)
+	if splitErr != nil {
+		return "", "", splitErr
+	}
 	switch len(parts) {
 	case 3: // port:host:port
-		if _, e := strconv.Atoi(parts[0]); e != nil {
-			return "", "", fmt.Errorf("bad local port %q", parts[0])
+		if e := validatePort(parts[0]); e != nil {
+			return "", "", fmt.Errorf("bad local port %q: %w", parts[0], e)
 		}
-		if _, e := strconv.Atoi(parts[2]); e != nil {
-			return "", "", fmt.Errorf("bad remote port %q", parts[2])
+		if strings.TrimSpace(parts[1]) == "" {
+			return "", "", errors.New("remote host is empty")
+		}
+		if e := validatePort(parts[2]); e != nil {
+			return "", "", fmt.Errorf("bad remote port %q: %w", parts[2], e)
 		}
 		return "127.0.0.1:" + parts[0], parts[1] + ":" + parts[2], nil
 	case 4: // bind:port:host:port
-		if _, e := strconv.Atoi(parts[1]); e != nil {
-			return "", "", fmt.Errorf("bad local port %q", parts[1])
+		if strings.TrimSpace(parts[0]) == "" {
+			return "", "", errors.New("bind address is empty")
 		}
-		if _, e := strconv.Atoi(parts[3]); e != nil {
-			return "", "", fmt.Errorf("bad remote port %q", parts[3])
+		if e := validatePort(parts[1]); e != nil {
+			return "", "", fmt.Errorf("bad local port %q: %w", parts[1], e)
+		}
+		if strings.TrimSpace(parts[2]) == "" {
+			return "", "", errors.New("remote host is empty")
+		}
+		if e := validatePort(parts[3]); e != nil {
+			return "", "", fmt.Errorf("bad remote port %q: %w", parts[3], e)
 		}
 		return parts[0] + ":" + parts[1], parts[2] + ":" + parts[3], nil
 	}
@@ -197,20 +236,65 @@ func ParseRemoteSpec(spec string) (remoteListen, localTarget string, err error) 
 
 // ParseDynamicSpec parses "[bind:]port" for SOCKS5 dynamic forward.
 func ParseDynamicSpec(spec string) (listen string, err error) {
-	parts := strings.Split(spec, ":")
+	parts, splitErr := splitBracketed(spec)
+	if splitErr != nil {
+		return "", splitErr
+	}
 	switch len(parts) {
 	case 1:
-		if _, e := strconv.Atoi(parts[0]); e != nil {
-			return "", fmt.Errorf("bad port %q", parts[0])
+		if e := validatePort(parts[0]); e != nil {
+			return "", fmt.Errorf("bad port %q: %w", parts[0], e)
 		}
 		return "127.0.0.1:" + parts[0], nil
 	case 2:
-		if _, e := strconv.Atoi(parts[1]); e != nil {
-			return "", fmt.Errorf("bad port %q", parts[1])
+		if strings.TrimSpace(parts[0]) == "" {
+			return "", errors.New("bind address is empty")
+		}
+		if e := validatePort(parts[1]); e != nil {
+			return "", fmt.Errorf("bad port %q: %w", parts[1], e)
 		}
 		return parts[0] + ":" + parts[1], nil
 	}
 	return "", fmt.Errorf("expected [bind:]port, got %q", spec)
+}
+
+func validatePort(raw string) error {
+	port, err := strconv.Atoi(raw)
+	if err != nil || port < 1 || port > 65535 {
+		return errors.New("must be an integer in 1..65535")
+	}
+	return nil
+}
+
+// splitBracketed splits colon-delimited forward specs while preserving IPv6
+// literals in brackets, e.g. "[::1]:8080:[2001:db8::1]:22".
+func splitBracketed(spec string) ([]string, error) {
+	var parts []string
+	start, depth := 0, 0
+	for i, r := range spec {
+		switch r {
+		case '[':
+			if depth != 0 {
+				return nil, fmt.Errorf("invalid nested '[' in %q", spec)
+			}
+			depth = 1
+		case ']':
+			if depth == 0 {
+				return nil, fmt.Errorf("unmatched ']' in %q", spec)
+			}
+			depth = 0
+		case ':':
+			if depth == 0 {
+				parts = append(parts, spec[start:i])
+				start = i + 1
+			}
+		}
+	}
+	if depth != 0 {
+		return nil, fmt.Errorf("unclosed '[' in %q", spec)
+	}
+	parts = append(parts, spec[start:])
+	return parts, nil
 }
 
 // CtxOnSignal returns a context cancelled on SIGINT/SIGTERM so forwards exit

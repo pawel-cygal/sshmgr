@@ -5,10 +5,10 @@ import (
 	"strings"
 	"time"
 
-	"sshmgr/internal/config"
-	"sshmgr/internal/forwards"
-	"sshmgr/internal/fwdregistry"
-	"sshmgr/internal/theme"
+	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/forwards"
+	"github.com/systeampl/sshmgr/internal/fwdregistry"
+	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -272,4 +272,3 @@ func (s *uiState) confirmKillForward(alias string, e fwdregistry.Entry, onClose 
 		})
 	s.pages.AddPage("killconfirm", modal, true, true)
 }
-
