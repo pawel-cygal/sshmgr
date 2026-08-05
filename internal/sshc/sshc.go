@@ -813,6 +813,10 @@ func InteractiveShell(client *ssh.Client, h config.HostConfig, steps []config.Lo
 	// login_steps_auto is false: the chain is then available only via the
 	// in-session `~r` escalation hotkey, which avoids racing MFA prompts at
 	// connect.
+	escalateKey := byte('~')
+	if h.EscalateKey != "" {
+		escalateKey = h.EscalateKey[0]
+	}
 	autoRun := h.LoginStepsAuto == nil || *h.LoginStepsAuto
 	if len(steps) > 0 && autoRun {
 		statusf("[sshmgr] running %d login step(s)...\n", len(steps))
@@ -820,6 +824,12 @@ func InteractiveShell(client *ssh.Client, h config.HostConfig, steps []config.Lo
 			return fmt.Errorf("login chain: %w", err)
 		}
 		statusf("[sshmgr] login chain complete, dropping to shell.\n")
+	} else if len(steps) > 0 {
+		// The chain is deliberately not fired here (MFA-gated hosts), so the
+		// hotkey is the only way in — say so, otherwise the shell just opens
+		// unescalated and looks like login_steps silently did nothing.
+		statusf("[sshmgr] %d login step(s) ready — press %cr at a line start to escalate (%s)\n",
+			len(steps), escalateKey, steps[0].Command)
 	}
 
 	// Switch to raw mode for interactive shell.
@@ -836,10 +846,6 @@ func InteractiveShell(client *ssh.Client, h config.HostConfig, steps []config.Lo
 	// `~r` escalation hotkey (recognised at line start) and runs the host's
 	// login_steps chain on demand against the live session. Blocks forever on
 	// terminal read after Wait returns, but main() exits and the OS reaps it.
-	escalateKey := byte('~')
-	if h.EscalateKey != "" {
-		escalateKey = h.EscalateKey[0]
-	}
 	escStatus := func(s string) { fmt.Fprintf(os.Stderr, "\r\n[sshmgr] %s\r\n", s) }
 	go escalateStdinPump(stdinPipe, os.Stdin, escalateKey, steps, h, insp, escStatus)
 

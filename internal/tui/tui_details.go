@@ -111,14 +111,11 @@ func (s *uiState) showDetails(alias string) {
 		label("last "+e.Action, dim, e.When)
 	}
 	if len(h.LoginSteps) > 0 {
-		label("login_steps", "", fmt.Sprintf("%d step(s)", len(h.LoginSteps)))
+		label("login_steps", "", fmt.Sprintf("%d step(s)  %s%s[-]",
+			len(h.LoginSteps), dim, escalateHint(h)))
 		for i, st := range h.LoginSteps {
-			env := st.PasswordEnv
-			if env == "" && st.Response != "" {
-				env = "<literal>"
-			}
 			fmt.Fprintf(&b, "  %s%d.[-] %s  %s(expect: %q  pass: %s)[-]\n",
-				accent, i+1, st.Command, dim, st.Expect, env)
+				accent, i+1, st.Command, dim, st.Expect, stepPasswordSource(st))
 		}
 	}
 	if h.KVM != nil && h.KVM.Host != "" {
@@ -245,6 +242,43 @@ func (s *uiState) showResolvedConfig(alias string) {
 	})
 	s.pages.AddPage("resolved", centered(tv, 64, 20), true, true)
 	s.app.SetFocus(tv)
+}
+
+// stepPasswordSource names the backend a login step's response comes from, in
+// the same precedence order secret.Resolve tries them — so the pane cannot show
+// a source the chain would not actually use.
+func stepPasswordSource(st config.LoginStep) string {
+	switch {
+	case st.Expect == "":
+		return "none needed"
+	case st.Response != "":
+		return "<literal>"
+	case st.PasswordEnv != "":
+		return "env:" + st.PasswordEnv
+	case st.PasswordKeyring != "":
+		return "keyring:" + st.PasswordKeyring
+	case st.PasswordCmd != "":
+		return "cmd"
+	case st.PasswordPrompt:
+		return "prompt"
+	default:
+		return "unset"
+	}
+}
+
+// escalateHint spells out, next to the login_steps summary, how the chain is
+// actually triggered for this host — the in-session hotkey is otherwise
+// invisible from the TUI, which is exactly where people look for it.
+func escalateHint(h config.HostConfig) string {
+	key := h.EscalateKey
+	if key == "" {
+		key = "~"
+	}
+	hotkey := key + "r"
+	if h.LoginStepsAuto != nil && !*h.LoginStepsAuto {
+		return "(manual — press " + hotkey + " in the session)"
+	}
+	return "(auto at connect; " + hotkey + " re-runs it)"
 }
 
 func splitCSV(s string) []string {

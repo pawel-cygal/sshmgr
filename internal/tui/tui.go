@@ -427,6 +427,13 @@ func fullHelpText() string {
 	b.WriteString(row("n / p", "next / previous group in the diff detail"))
 	b.WriteString(row("w", "save the current diff (plain text) to a file"))
 	b.WriteString(row("q / Esc", "back (detail → overview → host list)"))
+	b.WriteString("\n" + hd + "Inside an SSH session[-]  " + theme.Current.DimTag() + "(after Enter)[-]\n")
+	b.WriteString(row("~r", "run this host's login_steps in place"))
+	b.WriteString(row("~~", "send a literal ~"))
+	b.WriteString("  " + theme.Current.DimTag() +
+		"~ is special only at the start of a line, and ~r\n" +
+		"  also re-escalates after you exit back down.\n" +
+		"  Override the escape char with escalate_key.[-]\n")
 	return b.String()
 }
 

@@ -379,3 +379,63 @@ func TestMemoProbeSingleflightsConcurrentCallers(t *testing.T) {
 		t.Fatalf("underlying probe ran %d times, want 1", got)
 	}
 }
+
+func TestEscalateHint(t *testing.T) {
+	no, yes := false, true
+	cases := []struct {
+		name string
+		host config.HostConfig
+		want string
+	}{
+		{"auto by default", config.HostConfig{}, "(auto at connect; ~r re-runs it)"},
+		{"explicit auto", config.HostConfig{LoginStepsAuto: &yes}, "(auto at connect; ~r re-runs it)"},
+		{"manual", config.HostConfig{LoginStepsAuto: &no}, "(manual — press ~r in the session)"},
+		{"custom escape char", config.HostConfig{LoginStepsAuto: &no, EscalateKey: "`"}, "(manual — press `r in the session)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := escalateHint(tc.host); got != tc.want {
+				t.Fatalf("escalateHint = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The pane must name the backend the chain would actually use, so precedence
+// here has to track secret.Resolve rather than the order of the struct fields.
+func TestStepPasswordSource(t *testing.T) {
+	cases := []struct {
+		name string
+		step config.LoginStep
+		want string
+	}{
+		{"no expect needs no password", config.LoginStep{Command: "cd /"}, "none needed"},
+		{"literal", config.LoginStep{Expect: "assword", Response: "hunter2"}, "<literal>"},
+		{"env", config.LoginStep{Expect: "assword", PasswordEnv: "PW"}, "env:PW"},
+		{"keyring", config.LoginStep{Expect: "assword", PasswordKeyring: "sbs-root"}, "keyring:sbs-root"},
+		{"cmd", config.LoginStep{Expect: "assword", PasswordCmd: "pass show x"}, "cmd"},
+		{"prompt", config.LoginStep{Expect: "assword", PasswordPrompt: true}, "prompt"},
+		{"nothing configured", config.LoginStep{Expect: "assword"}, "unset"},
+		{"literal wins over keyring", config.LoginStep{Expect: "assword", Response: "hunter2", PasswordKeyring: "k"}, "<literal>"},
+		{"env wins over keyring", config.LoginStep{Expect: "assword", PasswordEnv: "PW", PasswordKeyring: "k"}, "env:PW"},
+		{"keyring wins over cmd", config.LoginStep{Expect: "assword", PasswordKeyring: "k", PasswordCmd: "c"}, "keyring:k"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stepPasswordSource(tc.step); got != tc.want {
+				t.Fatalf("stepPasswordSource = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The `?` overlay is where people go looking for the escalation hotkey; if the
+// section is dropped it is invisible from the UI again.
+func TestFullHelpDocumentsEscalationHotkey(t *testing.T) {
+	help := fullHelpText()
+	for _, want := range []string{"Inside an SSH session", "~r", "~~", "escalate_key"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("fullHelpText missing %q", want)
+		}
+	}
+}

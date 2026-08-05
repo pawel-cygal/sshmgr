@@ -30,3 +30,8 @@ All notable changes to sshmgr are documented here. The project follows
   edits, detached-forward readiness, password-command cache expiry, and live
   host probing.
 - Set the canonical Go module path to `github.com/systeampl/sshmgr`.
+- Surface the in-session escalation hotkey in the UI: an "Inside an SSH session"
+  section in the `?` overlay, the resolved hotkey next to `login_steps` in the
+  host details pane, and a hint at connect when the chain is set to manual. The
+  details pane also names keyring/command/prompt password backends instead of
+  showing an empty `pass:` field.
