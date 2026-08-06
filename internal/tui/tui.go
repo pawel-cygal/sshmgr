@@ -8,6 +8,7 @@ import (
 
 	"github.com/systeampl/sshmgr/internal/banner"
 	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/fwdregistry"
 	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/gdamore/tcell/v2"
@@ -35,6 +36,13 @@ const (
 	// {--check, --diff, --extra-vars V} flags.
 	ActionPlaybook Action = "playbook"
 )
+
+// buildVersion is the version string shown in the compact banner. main sets
+// it at startup; it stays empty in tests.
+var buildVersion = "dev"
+
+// SetBuildVersion lets main hand the linker-injected version to the TUI.
+func SetBuildVersion(v string) { buildVersion = v }
 
 // Run launches the TUI. Returns (alias, action, extraArgs). If action is
 // ActionNone the user quit without picking anything. extraArgs carries extra
@@ -91,7 +99,7 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		SetBorderPadding(0, 0, 1, 1)
 
 	state.help = tview.NewTextView().SetDynamicColors(true).SetWrap(false)
-	state.help.SetText(helpText())
+	state.help.SetText(helpText(24))
 
 	state.status = tview.NewTextView().SetDynamicColors(true).SetWrap(false)
 
@@ -121,6 +129,8 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		AddItem(state.details, 0, 1, false).
 		AddItem(state.status, 1, 0, false).
 		AddItem(state.bottom, 2, 0, false)
+	state.rightCol = right
+	state.footerRows = 2
 
 	body := tview.NewFlex().
 		AddItem(state.leftPages, 36, 0, true).
@@ -130,10 +140,12 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		SetDynamicColors(true).
 		SetTextAlign(tview.AlignLeft).
 		SetWrap(false)
-	bannerView.SetText(banner.ColoredTview())
+	state.bannerView = bannerView
+	state.bannerVariant = banner.Compact
+	bannerView.SetText(banner.Render(banner.Compact, state.bannerContext()))
 
 	state.layout = tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(bannerView, banner.Height(), 0, false).
+		AddItem(bannerView, banner.Height(banner.Compact), 0, false).
 		AddItem(body, 0, 1, true)
 
 	state.pages = tview.NewPages().AddPage("main", state.layout, true, true)
@@ -333,6 +345,28 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 	})
 	defer stopPing()
 
+	// The terminal size is not known until the first draw. Pick the banner
+	// variant then, and again on every resize, so the layout adapts instead
+	// of being fixed at construction time.
+	app.SetBeforeDrawFunc(func(screen tcell.Screen) bool {
+		w, h := screen.Size()
+
+		want := banner.ChooseVariant(h, w)
+		if want != state.bannerVariant {
+			state.bannerVariant = want
+			state.bannerView.SetText(banner.Render(want, state.bannerContext()))
+			state.layout.ResizeItem(state.bannerView, banner.Height(want), 0)
+		}
+
+		if fh := footerHeight(h); fh != state.footerRows {
+			state.footerRows = fh
+			state.help.SetText(helpText(h))
+			state.rightCol.ResizeItem(state.bottom, fh, 0)
+		}
+
+		return false
+	})
+
 	if err := app.SetRoot(state.pages, true).EnableMouse(true).Run(); err != nil {
 		return "", ActionNone, nil, err
 	}
@@ -346,8 +380,10 @@ const (
 	sortRecent = "recent"
 )
 
-// helpText is dynamic so it picks up the current theme's HelpKey color. It
-// is two lines — the full key list overflows a single 80-column row.
+// footerMinHeight is the terminal height at or above which the footer keeps
+// both of its rows.
+const footerMinHeight = 24
+
 // pill renders a key as a small filled "button" — the key padded on a
 // HelpKey-colored block — followed by its label in ordinary text. The
 // [-:-] reset clears both foreground and background so the color never
@@ -358,7 +394,9 @@ func pill(key, label string) string {
 		key + " [-:-]" + label
 }
 
-func helpText() string {
+// helpTextFull is the two-row footer. The key list does not fit one
+// 80-column row, so it wraps to a second.
+func helpTextFull() string {
 	line1 := []string{
 		pill("Enter", "shell"), pill("s", "sftp"), pill("f", "files"),
 		pill("p", "fwd"), pill("c", "snippet"), pill("x", "exec"),
@@ -370,6 +408,36 @@ func helpText() string {
 		pill("?", "help"), pill("q", "quit"),
 	}
 	return strings.Join(line1, " ") + "\n" + strings.Join(line2, " ")
+}
+
+// helpTextCompact is the single-row footer used when vertical space is
+// scarce. It keeps the actions that have no other discoverable route and
+// drops the rest, which the ? overlay already lists in full.
+func helpTextCompact() string {
+	return strings.Join([]string{
+		pill("Enter", "shell"), pill("s", "sftp"), pill("f", "files"),
+		pill("p", "fwd"), pill("x", "exec"), pill("/", "filter"),
+		pill("?", "help"), pill("q", "quit"),
+	}, " ")
+}
+
+// footerHeight is the row count for a terminal of the given height. Below
+// footerMinHeight the second row costs more than it returns: with a compact
+// banner (1 row), the status line (1) and a two-row footer, a 24-row
+// terminal keeps only 20 rows of panes.
+func footerHeight(termHeight int) int {
+	if termHeight >= footerMinHeight {
+		return 2
+	}
+	return 1
+}
+
+// helpText returns the footer for a terminal of the given height.
+func helpText(termHeight int) string {
+	if footerHeight(termHeight) == 2 {
+		return helpTextFull()
+	}
+	return helpTextCompact()
 }
 
 // fullHelpText is the complete keymap shown by the `?` overlay.
@@ -463,16 +531,20 @@ type uiState struct {
 	cfg        *config.Config
 	configPath string
 
-	list        *tview.List
-	tree        *tview.TreeView
-	leftPages   *tview.Pages
-	details     *tview.TextView
-	pages       *tview.Pages
-	layout      *tview.Flex
-	help        *tview.TextView
-	status      *tview.TextView
-	bottom      *tview.Pages
-	filterInput *tview.InputField
+	list          *tview.List
+	tree          *tview.TreeView
+	leftPages     *tview.Pages
+	details       *tview.TextView
+	pages         *tview.Pages
+	layout        *tview.Flex
+	help          *tview.TextView
+	status        *tview.TextView
+	bottom        *tview.Pages
+	filterInput   *tview.InputField
+	bannerView    *tview.TextView
+	bannerVariant banner.Variant
+	rightCol      *tview.Flex
+	footerRows    int
 
 	mode          string // modeFlat or modeTree
 	sort          string // sortName or sortRecent
@@ -483,6 +555,29 @@ type uiState struct {
 	extraArgs     []string
 	pings         *pingMap
 	multiSelected map[string]bool
+}
+
+// bannerContext gathers what the compact banner shows. The forward count is
+// read from the registry, which is what the details panel already does.
+func (s *uiState) bannerContext() banner.Context {
+	active, _ := fwdregistry.List()
+	return banner.Context{
+		Version:    buildVersion,
+		ConfigPath: shortenHome(s.configPath),
+		Theme:      theme.Current.Name,
+		Hosts:      len(s.cfg.Hosts),
+		Forwards:   len(active),
+	}
+}
+
+// shortenHome replaces the user's home directory prefix with ~ so the
+// compact banner stays inside its column budget.
+func shortenHome(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || !strings.HasPrefix(p, home) {
+		return p
+	}
+	return "~" + p[len(home):]
 }
 
 // lastLogin returns the most recent LoginEntry for alias, or zero if none.

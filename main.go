@@ -157,6 +157,7 @@ func cmdUI() {
 	if err != nil {
 		fatal(err.Error())
 	}
+	tui.SetBuildVersion(currentBuildInfo().Version)
 	alias, action, extraArgs, err := tui.Run(cfg, path)
 	if err != nil {
 		fatal(err.Error())
