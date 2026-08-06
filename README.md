@@ -31,8 +31,10 @@ have:
   chain (proxy_jump, proxy_command, all auth backends).
 - **Port forwarding** (-L / -R / -D SOCKS5) + **X11** + **agent forwarding**.
 - **Real-time host status** in the TUI (🟢 / 🔴 / 🟡 / ⚫).
-- Three colour **themes** — default (aqua), hacker (matrix), cyberpunk
-  (neon).
+- Eight colour **themes** — `default` (aqua), `hacker` (matrix), `cyberpunk`
+  (neon), `catppuccin`, `tokyonight`, `nord`, `rosepine`, `gruvbox`. The
+  default is unchanged; the other seven are opt-in via `theme:` in the
+  config or `SSHMGR_THEME`.
 - **Parallel command execution** across a group or tag — `sshmgr exec --group fleet 'uptime'`
   runs across N hosts with bounded parallelism, prefixed output, and a
   pass/fail summary.
@@ -137,7 +139,9 @@ sshmgr add <alias>          add a new host (interactive prompt)
 sshmgr edit                 open the config in $EDITOR
 sshmgr rm <alias>           remove a host
 sshmgr trust <alias>        drop stale known_hosts entry (after key rotation)
-sshmgr theme [<name>]       list / set UI theme (default | hacker | cyberpunk)
+sshmgr theme [<name>]       list / set UI theme (default | hacker | cyberpunk |
+                            catppuccin | tokyonight | nord | rosepine | gruvbox)
+sshmgr about                print the logo, build and config summary
 sshmgr keyring set <key>    store password in OS keyring
 sshmgr keyring rm  <key>    remove from OS keyring
 sshmgr keyring ls           list keyring entries referenced from config
@@ -239,6 +243,7 @@ count) sits above the two-line key footer.
 | `A` / `R` / `D` | add / rename / delete **group** |
 | `K` | stop the host's active forward (asks the `p` menu when there are several) |
 | `?` | show the full key list (cheatsheet overlay) |
+| `F1` | show the about screen (logo, version, config path, host count) |
 | `Esc` | clear filter, or quit |
 | `q` | quit |
 
@@ -355,7 +360,8 @@ most recent).
 ### Schema
 
 ```yaml
-theme: default              # default | hacker | cyberpunk
+theme: default              # default | hacker | cyberpunk | catppuccin |
+                             # tokyonight | nord | rosepine | gruvbox
 playbooks_dir: ~/.config/sshmgr/playbooks  # where `sshmgr playbook` resolves bare names
 snippets_dir: ~/.config/sshmgr/snippets    # reusable snippet libraries (see Snippets)
 snippet_glob: "*.yaml"                     # which files in snippets_dir to load
@@ -1492,14 +1498,20 @@ Exits with code 1 on any **error** so it's safe to use in CI.
 
 ## Themes
 
+Eight palettes: `default`, `hacker`, `cyberpunk`, `catppuccin`, `tokyonight`,
+`nord`, `rosepine`, `gruvbox`.
+
 ```bash
 sshmgr theme                    # show current + list available
 sshmgr theme cyberpunk          # persist in config
 SSHMGR_THEME=hacker sshmgr ui   # per-session override
 ```
 
-Selection highlight is always bright yellow with black text — readable on
-any terminal background regardless of theme.
+The default theme and every existing colour are unchanged; the five new
+palettes (`catppuccin`, `tokyonight`, `nord`, `rosepine`, `gruvbox`) are
+opt-in through `theme:` or `SSHMGR_THEME`. Selection highlight is always
+bright yellow with black text — readable on any terminal background
+regardless of theme.
 
 ## Debugging
 
@@ -1526,12 +1538,14 @@ internal/
   fwd/            port forwarding (-L / -R / -D) + X11 channel handler
   importer/       host import from ssh_config / Ansible / etc-hosts
   lint/           config validator (groups, refs, keys, snippets)
+  logo/           SysTeam wolf rendered as half-block terminal cells
   rotate/         safe fleet-wide SSH key rotation (append → verify → remove)
   secret/         password backends (env / keyring / cmd / prompt)
   snippets/       file-based snippet libraries + host/group/file merge
   sshc/           SSH client: connect chain, auth, host key TOFU, PTY,
                   login_steps expect/response, ad-hoc command execution
-  theme/          colour palettes (default / hacker / cyberpunk) + ANSI helpers
+  theme/          colour palettes (default / hacker / cyberpunk / catppuccin /
+                  tokyonight / nord / rosepine / gruvbox) + ANSI helpers
   transfer/       SCP one-shot, SFTP REPL, file-transfer logger
   tui/            host list (flat + tree), 2-pane file manager,
                   port-forward dialog, live ping
