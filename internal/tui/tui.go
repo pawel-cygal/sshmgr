@@ -549,4 +549,21 @@ func applyTheme(cfg *config.Config) {
 		InverseTextColor:            p.Inverse,
 		ContrastSecondaryTextColor:  p.Primary,
 	}
+
+	// tview.Borders is an anonymous struct var, so fields are set one by
+	// one. The *Focus fields default to double-line box drawing; without
+	// overriding them the focused pane would render ╔═╗ against the
+	// rounded corners of every other pane.
+	tview.Borders.TopLeft = '╭'
+	tview.Borders.TopRight = '╮'
+	tview.Borders.BottomLeft = '╰'
+	tview.Borders.BottomRight = '╯'
+	tview.Borders.TopLeftFocus = '╭'
+	tview.Borders.TopRightFocus = '╮'
+	tview.Borders.BottomLeftFocus = '╰'
+	tview.Borders.BottomRightFocus = '╯'
+	// Focused panes are distinguished by border colour (FocusBdr), not by
+	// a heavier line weight, so the focus runes match the normal ones.
+	tview.Borders.HorizontalFocus = tview.Borders.Horizontal
+	tview.Borders.VerticalFocus = tview.Borders.Vertical
 }
