@@ -56,7 +56,7 @@ func (s *uiState) openPlaybookPicker(label string, selectorArgs, books []string)
 		ShowSecondaryText(false).
 		SetHighlightFullLine(true).
 		SetMainTextColor(theme.Current.Text).
-		SetSelectedTextColor(theme.Current.Inverse).
+		SetSelectedTextColor(theme.Current.SelText).
 		SetSelectedBackgroundColor(theme.Current.Selection)
 	list.SetBorder(true).
 		SetTitle(fmt.Sprintf(" pick a playbook · %s   (Enter=continue  /=filter  Esc=close) ", label)).

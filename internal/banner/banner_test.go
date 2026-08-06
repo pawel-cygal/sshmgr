@@ -24,7 +24,7 @@ func TestChooseVariantPrefersCompactOnShortTerminals(t *testing.T) {
 		{29, 100, Compact},
 		{30, 100, Full},
 		{40, 100, Full},
-		{40, 79, Compact}, // too narrow for the 78-column ASCII banner
+		{40, 70, Compact}, // too narrow for the 71-column ASCII banner
 	}
 	for _, tc := range cases {
 		if got := ChooseVariant(tc.h, tc.w); got != tc.want {

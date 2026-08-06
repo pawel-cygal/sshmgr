@@ -84,6 +84,16 @@ func TestEveryColourSlotIsSetExceptPanelBg(t *testing.T) {
 // The selected row must stay readable in every palette. 4.5 is the WCAG AA
 // threshold for body text; a highlighted row that fails it is the exact
 // defect that forced every palette to a shouting yellow selection.
+//
+// This asserts contrast between SelText and Selection — the same pair that
+// every selection site in internal/tui actually paints on screen (e.g.
+// tview's List.SetSelectedTextColor(theme.Current.SelText) alongside
+// List.SetSelectedBackgroundColor(theme.Current.Selection), the pattern
+// tui.go's SetSelectedTextColor call uses). Asserting Inverse/Selection
+// here instead would be tautological: SelText was added specifically so
+// the foreground could stop being pinned to Inverse, so a test that checks
+// the pair the UI does NOT draw can never catch a palette that forgot to
+// wire SelText in.
 func TestSelectionIsReadableInEveryPalette(t *testing.T) {
 	defer Set("default")
 	const min = 4.5

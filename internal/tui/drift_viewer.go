@@ -41,7 +41,7 @@ func ShowDriftReport(title, cmd string, groups []exec.OutputGroup) ExecChoice {
 		SetHighlightFullLine(true).
 		SetMainTextColor(theme.Current.Text).
 		SetSecondaryTextColor(theme.Current.Dim).
-		SetSelectedTextColor(theme.Current.Inverse).
+		SetSelectedTextColor(theme.Current.SelText).
 		SetSelectedBackgroundColor(theme.Current.Selection)
 	list.SetBorder(true).
 		SetTitle(" "+title+" ").

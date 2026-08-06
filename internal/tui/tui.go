@@ -74,7 +74,7 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		ShowSecondaryText(false).
 		SetHighlightFullLine(true).
 		SetMainTextColor(theme.Current.Text).
-		SetSelectedTextColor(theme.Current.Inverse).
+		SetSelectedTextColor(theme.Current.SelText).
 		SetSelectedBackgroundColor(theme.Current.Selection)
 	state.list.SetBorder(true).
 		SetTitle(" hosts (flat) ").
@@ -570,6 +570,16 @@ type uiState struct {
 	extraArgs     []string
 	pings         *pingMap
 	multiSelected map[string]bool
+}
+
+// updateBanner re-renders the banner text from current state. Only the
+// Compact variant carries counters (host count, forward count) that can go
+// stale, so the full ASCII variant is skipped as pointless work.
+func (s *uiState) updateBanner() {
+	if s.bannerVariant != banner.Compact {
+		return
+	}
+	s.bannerView.SetText(banner.Render(banner.Compact, s.bannerContext()))
 }
 
 // bannerContext gathers what the compact banner shows. The forward count is

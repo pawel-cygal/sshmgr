@@ -11,8 +11,8 @@ import (
 	"github.com/systeampl/sshmgr/internal/theme"
 )
 
-// ASCII is the multi-line banner. Width is ~78 columns including the wolf
-// head on the right. Designed to fit a standard 80-column terminal.
+// ASCII is the multi-line banner. Its widest line is 71 columns including
+// the wolf head on the right. Designed to fit a standard 80-column terminal.
 const ASCII = `███████╗███████╗██╗  ██╗███╗   ███╗ ██████╗ ██████╗      /\___/\
 ██╔════╝██╔════╝██║  ██║████╗ ████║██╔════╝ ██╔══██╗    ( o . o )
 ███████╗███████╗███████║██╔████╔██║██║  ███╗██████╔╝     \  v  /
@@ -23,8 +23,9 @@ const ASCII = `███████╗███████╗██╗  ██
 // asciiHeight is the row count of ASCII. Kept in sync by a test.
 const asciiHeight = 6
 
-// asciiWidth is the column budget the ASCII art needs.
-const asciiWidth = 80
+// asciiWidth is the column budget the ASCII art needs — the width of its
+// widest line, measured in runes.
+const asciiWidth = 71
 
 // fullMinHeight is the terminal height below which the six-row banner costs
 // more rows than it is worth. Below this the compact line is used instead.
@@ -89,11 +90,4 @@ func Render(v Variant, ctx Context) string {
 		parts = append(parts, fmt.Sprintf("%s%d fwd[-]", t.SuccessTag(), ctx.Forwards))
 	}
 	return " " + strings.Join(parts, sep)
-}
-
-// ColoredTview returns the full ASCII banner wrapped with the active theme's
-// primary colour tag. Retained for CLI callers that want the art
-// unconditionally.
-func ColoredTview() string {
-	return theme.Current.PrimaryTag() + ASCII + "[-]"
 }

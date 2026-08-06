@@ -1509,9 +1509,11 @@ SSHMGR_THEME=hacker sshmgr ui   # per-session override
 
 The default theme and every existing colour are unchanged; the five new
 palettes (`catppuccin`, `tokyonight`, `nord`, `rosepine`, `gruvbox`) are
-opt-in through `theme:` or `SSHMGR_THEME`. Selection highlight is always
-bright yellow with black text — readable on any terminal background
-regardless of theme.
+opt-in through `theme:` or `SSHMGR_THEME`. The original three themes
+(`default`, `hacker`, `cyberpunk`) keep the bright-yellow-with-black-text
+selection highlight; each new palette instead pairs a subtler selection
+background with its own readable foreground colour, chosen so the
+highlighted row stays legible against that palette's background.
 
 ## Debugging
 

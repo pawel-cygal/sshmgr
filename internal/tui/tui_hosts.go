@@ -76,7 +76,7 @@ func (s *uiState) openForm(originalAlias string, h config.HostConfig) {
 	if dd, ok := form.GetFormItemByLabel("become method").(*tview.DropDown); ok {
 		dd.SetListStyles(
 			tcell.StyleDefault.Background(tcell.ColorDefault).Foreground(theme.Current.Text),
-			tcell.StyleDefault.Background(theme.Current.Selection).Foreground(theme.Current.Inverse).Bold(true),
+			tcell.StyleDefault.Background(theme.Current.Selection).Foreground(theme.Current.SelText).Bold(true),
 		)
 	}
 

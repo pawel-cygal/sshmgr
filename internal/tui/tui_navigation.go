@@ -82,6 +82,7 @@ func (s *uiState) refresh(focusAlias string) {
 		s.refreshList(focusAlias)
 	}
 	s.updateStatus()
+	s.updateBanner()
 }
 
 // updateStatus refreshes the one-line status bar: view mode, sort order,
@@ -272,11 +273,12 @@ func (s *uiState) refreshTree(focusAlias string) {
 	}
 	sort.Strings(groupNames)
 
-	// Force a consistent selected style so the highlight is always
-	// black-on-Selection (yellow) regardless of each node's own text color.
+	// Force a consistent selected style so the highlight always uses the
+	// palette's SelText/Selection pairing, regardless of each node's own
+	// text color.
 	selStyle := tcell.StyleDefault.
 		Background(theme.Current.Selection).
-		Foreground(theme.Current.Inverse).
+		Foreground(theme.Current.SelText).
 		Bold(true)
 
 	var focusNode *tview.TreeNode
