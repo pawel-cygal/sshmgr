@@ -35,11 +35,24 @@ func aboutRows(version, commit, configPath string, hosts int) [][2]string {
 	}
 }
 
-// aboutWidth and aboutHeight size the overlay: the logo plus a margin, and
-// enough rows for the wordmark and the info block beside it.
+// wordmarkWidth is the width of the block-letter wordmark in banner.ASCII --
+// the widest line with no trailing face/tagline art (line 4, "███████║...").
+// Slicing every line to this width strips the face and tagline reliably;
+// pattern-matching against the art itself is fragile because the face and
+// tagline start at different columns on different lines.
+const wordmarkWidth = 52
+
+// aboutWidth and aboutHeight size the overlay. With the logo shown, the
+// layout is side by side: left margin + logo + gap + wordmark + right
+// margin. logo.Viable already requires a terminal at least 100 columns
+// wide, so a 99-column overlay is safe by construction -- the two
+// thresholds are consistent on purpose, not two unrelated magic numbers.
+// aboutWidthNoLogo is the wordmark plus margins, used when the logo is not
+// drawn.
 const (
-	aboutWidth  = 62
-	aboutHeight = 24
+	aboutWidth       = 2 + logo.Width + 3 + wordmarkWidth + 2 // = 99
+	aboutWidthNoLogo = 58
+	aboutHeight      = 24
 )
 
 // newAboutBox draws the logo on the left and the wordmark plus build
@@ -80,16 +93,18 @@ func newAboutBox(rows [][2]string, withLogo bool) *tview.Box {
 		}
 
 		// wordmark: the ASCII art without its trailing face and tagline,
-		// which the logo beside it already says better
+		// which the logo beside it already says better. Every line is cut
+		// to wordmarkWidth runes -- the width of the one line (the block
+		// letters' bottom row) that carries no trailing art -- rather than
+		// pattern-matched, since the face and tagline start at different
+		// columns on different lines.
 		wy := inY + 1
 		for i, line := range strings.Split(banner.ASCII, "\n") {
-			if idx := strings.Index(line, "  /\\"); idx >= 0 {
-				line = line[:idx]
+			r := []rune(line)
+			if len(r) > wordmarkWidth {
+				r = r[:wordmarkWidth]
 			}
-			if idx := strings.Index(line, "     modern"); idx >= 0 {
-				line = line[:idx]
-			}
-			drawRunes(screen, textX, wy+i, strings.TrimRight(line, " "),
+			drawRunes(screen, textX, wy+i, strings.TrimRight(string(r), " "),
 				tcell.StyleDefault.Foreground(t.Primary))
 		}
 
@@ -143,7 +158,7 @@ func (s *uiState) showAbout() {
 
 	w := aboutWidth
 	if !withLogo {
-		w = 58
+		w = aboutWidthNoLogo
 	}
 	s.pages.AddPage("about", centered(box, w, aboutHeight), true, true)
 	s.app.SetFocus(box)
