@@ -439,3 +439,73 @@ func TestFullHelpDocumentsEscalationHotkey(t *testing.T) {
 		}
 	}
 }
+
+func TestDetailsTextSectionOrder(t *testing.T) {
+	cfg := &config.Config{
+		Hosts: map[string]config.HostConfig{
+			"kube01": {
+				Host: "10.0.0.11", Port: 22, User: "root",
+				Key:    "/home/me/.ssh/id_ed25519",
+				Groups: []string{"prod"}, Tags: []string{"k8s"},
+			},
+		},
+		Groups: map[string]config.GroupDefaults{},
+	}
+	s := &uiState{cfg: cfg}
+	got := stripColorTags(detailsText(s, "kube01"))
+
+	for _, want := range []string{"CONNECTION", "root@10.0.0.11:22", "MEMBERSHIP", "prod"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("details text missing %q\n---\n%s", want, got)
+		}
+	}
+	iConn := strings.Index(got, "CONNECTION")
+	iMemb := strings.Index(got, "MEMBERSHIP")
+	if iConn > iMemb {
+		t.Errorf("CONNECTION (at %d) must precede MEMBERSHIP (at %d)", iConn, iMemb)
+	}
+}
+
+func TestDetailsTextOmitsEmptySections(t *testing.T) {
+	cfg := &config.Config{
+		Hosts: map[string]config.HostConfig{
+			"plain": {Host: "10.0.0.99", Port: 22},
+		},
+		Groups: map[string]config.GroupDefaults{},
+	}
+	s := &uiState{cfg: cfg}
+	got := stripColorTags(detailsText(s, "plain"))
+
+	for _, absent := range []string{"MEMBERSHIP", "LOGIN STEPS", "kvm"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("details text for a bare host should not contain %q\n---\n%s", absent, got)
+		}
+	}
+	if !strings.Contains(got, "CONNECTION") {
+		t.Errorf("CONNECTION must always be present\n---\n%s", got)
+	}
+}
+
+func TestDetailsTextRendersConnectionString(t *testing.T) {
+	cases := []struct {
+		name string
+		host config.HostConfig
+		want string
+	}{
+		{"user and port", config.HostConfig{Host: "h", Port: 2222, User: "adm"}, "adm@h:2222"},
+		{"no user", config.HostConfig{Host: "h", Port: 22}, "h:22"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Hosts:  map[string]config.HostConfig{"x": tc.host},
+				Groups: map[string]config.GroupDefaults{},
+			}
+			s := &uiState{cfg: cfg}
+			got := stripColorTags(detailsText(s, "x"))
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("want connection string %q in\n%s", tc.want, got)
+			}
+		})
+	}
+}

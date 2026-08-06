@@ -43,99 +43,126 @@ func hostBadges(h config.HostConfig) string {
 	return out
 }
 
+// section writes a rule line and a section heading. Sections are the only
+// structure in the panel, so an empty one must never be emitted — callers
+// check their content first.
+func section(b *strings.Builder, title string, width int) {
+	dim := theme.Current.DimTag()
+	prim := theme.Current.PrimaryTag()
+	fmt.Fprintf(b, "\n%s%s[-]\n", dim, strings.Repeat("─", width))
+	fmt.Fprintf(b, "%s%s[-]\n", prim, title)
+}
+
+// connectionString renders the host in the form a person would type it.
+func connectionString(h config.HostConfig) string {
+	port := h.Port
+	if port == 0 {
+		port = 22
+	}
+	if h.User == "" {
+		return fmt.Sprintf("%s:%d", h.Host, port)
+	}
+	return fmt.Sprintf("%s@%s:%d", h.User, h.Host, port)
+}
+
 func (s *uiState) showDetails(alias string) {
 	if alias == "" {
 		s.details.SetText("")
 		return
 	}
+	s.details.SetText(detailsText(s, alias))
+}
+
+// detailsText renders the details panel body. Split out from showDetails so
+// the rendering can be tested without instantiating a widget.
+func detailsText(s *uiState, alias string) string {
 	h, _ := s.cfg.ResolveHost(alias)
-	prim := theme.Current.PrimaryTag()   // field labels
-	dim := theme.Current.DimTag()        // metadata / secondary
-	warn := theme.Current.WarningTag()   // external / caution
-	accent := theme.Current.AccentBTag() // values worth spotting (proxy)
+	dim := theme.Current.DimTag()
+	warn := theme.Current.WarningTag()
+	accent := theme.Current.AccentBTag()
+	ok := theme.Current.SuccessTag()
+	const ruleWidth = 36
+
 	var b strings.Builder
-	// label writes "key:" in the primary color, the value in valueTag
-	// (empty → default text color).
-	label := func(k, valueTag, v string) {
-		fmt.Fprintf(&b, "%s%-22s[-] %s%s[-]\n", prim, k+":", valueTag, v)
-	}
+
 	header := alias
 	if h.Pinned {
 		header = "★ " + alias
 	}
 	fmt.Fprintf(&b, "[%s::b]%s[-:-:-]\n", theme.ColorTag(theme.Current.Primary), header)
+
+	// status line: backend and badges, the two things worth knowing first
+	if h.External {
+		fmt.Fprintf(&b, "%sexternal[-]  %ssystem ssh / scp / sftp[-]\n", warn, dim)
+	} else {
+		fmt.Fprintf(&b, "%snative[-]  %sGo SSH[-]\n", ok, dim)
+	}
 	if badges := hostBadges(h); badges != "" {
 		b.WriteString(badges + "\n")
 	}
-	b.WriteString("\n")
 
-	if h.External {
-		label("backend", warn, "external (system ssh / scp / sftp)")
-	} else {
-		label("backend", "", "native (Go SSH)")
-	}
-	label("host", "", h.Host)
-	if h.Port != 0 {
-		label("port", "", strconv.Itoa(h.Port))
-	}
-	if h.User != "" {
-		label("user", "", h.User)
-	}
+	section(&b, "CONNECTION", ruleWidth)
+	fmt.Fprintf(&b, "  %s\n", connectionString(h))
 	if h.Key != "" {
-		label("key", "", h.Key)
+		fmt.Fprintf(&b, "  %s%s[-]\n", dim, h.Key)
 	}
-	if len(h.Groups) > 0 {
-		label("groups", "", strings.Join(h.Groups, ", "))
-	}
-	if len(h.Tags) > 0 {
-		label("tags", "", strings.Join(h.Tags, ", "))
-	}
-	label("auto_duo_push", "", fmt.Sprintf("%t", h.AutoDuoPush))
-	if h.AutoAcceptHostKey {
-		label("auto_accept_host_key", "", "true")
-	}
+	fmt.Fprintf(&b, "  %sauto_duo_push[-] %t\n", dim, h.AutoDuoPush)
 	if h.ProxyJump != "" {
-		label("proxy_jump", accent, h.ProxyJump)
+		fmt.Fprintf(&b, "  %sjump[-] %s%s[-]\n", dim, accent, h.ProxyJump)
 	}
 	if h.ProxyCommand != "" {
-		label("proxy_command", accent, h.ProxyCommand)
+		fmt.Fprintf(&b, "  %sproxy[-] %s%s[-]\n", dim, accent, h.ProxyCommand)
 	}
 	if h.Become.User != "" {
 		method := h.Become.Method
 		if method == "" {
 			method = "sudo"
 		}
-		label("become", "", method+" -> "+h.Become.User)
+		fmt.Fprintf(&b, "  %sbecome[-] %s -> %s\n", dim, method, h.Become.User)
 	}
-	if e, ok := s.lastLogin(alias); ok {
-		label("last "+e.Action, dim, e.When)
+	if h.AutoAcceptHostKey {
+		fmt.Fprintf(&b, "  %sauto_accept_host_key[-]\n", dim)
 	}
+
+	if len(h.Groups) > 0 || len(h.Tags) > 0 {
+		section(&b, "MEMBERSHIP", ruleWidth)
+		if len(h.Groups) > 0 {
+			fmt.Fprintf(&b, "  %s\n", strings.Join(h.Groups, ", "))
+		}
+		if len(h.Tags) > 0 {
+			fmt.Fprintf(&b, "  %s#%s[-]\n", dim, strings.Join(h.Tags, " #"))
+		}
+	}
+
 	if len(h.LoginSteps) > 0 {
-		label("login_steps", "", fmt.Sprintf("%d step(s)  %s%s[-]",
-			len(h.LoginSteps), dim, escalateHint(h)))
+		section(&b, "LOGIN STEPS", ruleWidth)
+		fmt.Fprintf(&b, "  %s%s[-]\n", dim, escalateHint(h))
 		for i, st := range h.LoginSteps {
 			fmt.Fprintf(&b, "  %s%d.[-] %s  %s(expect: %q  pass: %s)[-]\n",
 				accent, i+1, st.Command, dim, st.Expect, stepPasswordSource(st))
 		}
 	}
+
 	if h.KVM != nil && h.KVM.Host != "" {
+		section(&b, "KVM", ruleWidth)
 		kvmHost := h.KVM.ResolvedHost(map[string]string{
-			"alias": alias, "host": h.Host, "user": h.User, "port": strconv.Itoa(h.Port),
+			"alias": alias, "host": h.Host, "user": h.User,
+			"port": strconv.Itoa(h.Port),
 		})
 		typ := h.KVM.Type
 		if typ == "" {
 			typ = "nanokvm"
 		}
-		label("kvm", accent, kvmHost+"  "+dim+"("+typ+")[-]")
+		fmt.Fprintf(&b, "  %s%s[-]  %s(%s)[-]\n", accent, kvmHost, dim, typ)
 	}
+
 	if len(h.Commands) > 0 {
-		fmt.Fprintf(&b, "\n%scommands:[-]\n", prim)
+		section(&b, "COMMANDS", ruleWidth)
 		for _, c := range h.Commands {
 			fmt.Fprintf(&b, "  %s-[-] %s\n", dim, c)
 		}
 	}
-	// Active forwards going through this host (read from the registry on
-	// every refresh — typical N is 0-3 so the readdir is negligible).
+
 	active, _ := fwdregistry.List()
 	var hostActive []fwdregistry.Entry
 	for _, e := range active {
@@ -144,31 +171,34 @@ func (s *uiState) showDetails(alias string) {
 		}
 	}
 	if len(hostActive) > 0 {
-		fmt.Fprintf(&b, "\n%sactive forwards[-]\n", prim)
+		section(&b, "ACTIVE FORWARDS", ruleWidth)
 		for _, e := range hostActive {
 			age := time.Since(e.StartedAt).Round(time.Second)
-			fmt.Fprintf(&b, "  %s-%s %s[-]   %spid %d · age %s · %s · %s[-]\n",
-				accent, e.Type, e.Spec, dim, e.PID, age, e.Source, e.Backend)
+			fmt.Fprintf(&b, "  %s-%s %s[-]\n", accent, e.Type, e.Spec)
+			fmt.Fprintf(&b, "    %spid %d · age %s · %s · %s[-]\n",
+				dim, e.PID, age, e.Source, e.Backend)
 		}
 	}
 
+	if e, ok2 := s.lastLogin(alias); ok2 {
+		fmt.Fprintf(&b, "\n%slast %s  %s[-]\n", dim, e.Action, e.When)
+	}
+
 	hk := theme.Current.HelpKeyTag()
-	// The footer already lists the global keys; this block only surfaces
-	// the two host actions the footer has no room for, plus the kill row
-	// when there's a live tunnel that can actually be stopped.
-	fmt.Fprintf(&b, "\n%sactions[-]\n", prim)
+	section(&b, "ACTIONS", ruleWidth)
 	fmt.Fprintf(&b, "  %si[-] inspect config   %s*[-] pin / unpin\n", hk, hk)
 	if h.KVM != nil && h.KVM.Host != "" {
-		fmt.Fprintf(&b, "  %sV[-] kvm power menu (reset / power / off / web / status)\n", hk)
+		fmt.Fprintf(&b, "  %sV[-] kvm power menu\n", hk)
 	}
 	if len(hostActive) > 0 {
 		suffix := "stop active forward"
 		if len(hostActive) > 1 {
-			suffix = fmt.Sprintf("stop active forward (1 of %d — pick in `p` for the rest)", len(hostActive))
+			suffix = fmt.Sprintf("stop active forward (1 of %d — pick in `p` for the rest)",
+				len(hostActive))
 		}
 		fmt.Fprintf(&b, "  %sK[-] %s\n", hk, suffix)
 	}
-	s.details.SetText(b.String())
+	return b.String()
 }
 
 func stripColorTags(s string) string {
