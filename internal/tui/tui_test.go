@@ -509,3 +509,43 @@ func TestDetailsTextRendersConnectionString(t *testing.T) {
 		})
 	}
 }
+
+func TestAboutRowsContent(t *testing.T) {
+	rows := aboutRows("0.9.1", "c2173ca", "~/.sshmgr.yaml", 20)
+
+	labels := map[string]string{}
+	for _, r := range rows {
+		labels[r[0]] = r[1]
+	}
+	for _, want := range []string{"version", "config", "hosts", "license"} {
+		if _, ok := labels[want]; !ok {
+			t.Errorf("aboutRows is missing the %q row: %v", want, rows)
+		}
+	}
+	if got := labels["version"]; !strings.Contains(got, "0.9.1") || !strings.Contains(got, "c2173ca") {
+		t.Errorf("version row = %q, want it to carry both version and commit", got)
+	}
+	if got := labels["config"]; got != "~/.sshmgr.yaml" {
+		t.Errorf("config row = %q, want the path verbatim", got)
+	}
+	if got := labels["hosts"]; got != "20" {
+		t.Errorf("hosts row = %q, want \"20\"", got)
+	}
+}
+
+func TestAboutRowsHandlesUnknownBuildInfo(t *testing.T) {
+	// `go install module@version` cannot inject linker flags, so an
+	// installed binary can legitimately report an unknown commit. The
+	// about screen must stay readable rather than printing a bare comma.
+	rows := aboutRows("dev", "unknown", "/etc/sshmgr.yaml", 0)
+	for _, r := range rows {
+		if r[0] == "version" {
+			if strings.Contains(r[1], "unknown") {
+				t.Errorf("version row = %q, want the unknown commit omitted", r[1])
+			}
+			if !strings.Contains(r[1], "dev") {
+				t.Errorf("version row = %q, want it to still carry the version", r[1])
+			}
+		}
+	}
+}

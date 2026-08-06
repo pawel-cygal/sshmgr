@@ -41,8 +41,15 @@ const (
 // it at startup; it stays empty in tests.
 var buildVersion = "dev"
 
-// SetBuildVersion lets main hand the linker-injected version to the TUI.
-func SetBuildVersion(v string) { buildVersion = v }
+// buildCommit is the commit shown on the about screen. main sets it at
+// startup alongside buildVersion.
+var buildCommit = "unknown"
+
+// SetBuildInfo lets main hand the linker-injected build details to the TUI.
+func SetBuildInfo(version, commit string) {
+	buildVersion = version
+	buildCommit = commit
+}
 
 // Run launches the TUI. Returns (alias, action, extraArgs). If action is
 // ActionNone the user quit without picking anything. extraArgs carries extra
@@ -188,6 +195,9 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 			return nil
 		case tcell.KeyTab:
 			state.toggleMode()
+			return nil
+		case tcell.KeyF1:
+			state.showAbout()
 			return nil
 		}
 		switch event.Rune() {
@@ -350,6 +360,8 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 	// of being fixed at construction time.
 	app.SetBeforeDrawFunc(func(screen tcell.Screen) bool {
 		w, h := screen.Size()
+		state.termColors = screen.Colors()
+		state.termWidth = w
 
 		want := banner.ChooseVariant(h, w)
 		if want != state.bannerVariant {
@@ -454,6 +466,7 @@ func fullHelpText() string {
 	b.WriteString(row("p", "forward menu: new / saved / recent / active"))
 	b.WriteString(row("c", "snippet picker"))
 	b.WriteString(row("i", "inspect resolved config — field sources"))
+	b.WriteString(row("F1", "about — version, config, license"))
 	b.WriteString(row("P", "run an Ansible playbook"))
 	b.WriteString(row("x / w", "exec a command / watch a command"))
 	b.WriteString(row("Space", "toggle multi-select on the host"))
@@ -545,6 +558,8 @@ type uiState struct {
 	bannerVariant banner.Variant
 	rightCol      *tview.Flex
 	footerRows    int
+	termColors    int
+	termWidth     int
 
 	mode          string // modeFlat or modeTree
 	sort          string // sortName or sortRecent
