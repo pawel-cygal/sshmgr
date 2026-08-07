@@ -113,6 +113,14 @@ func (s *uiState) updateStatus() {
 	} else {
 		parts = append(parts, fmt.Sprintf("%s%d hosts[-]", dim, total))
 	}
+	if s.animLevel != animInformative {
+		parts = append(parts, dim+"anim "+s.animLevel.String()+"[-]")
+	}
+	if done, total := s.pings.Progress(); total > 0 {
+		frame := spinnerFrame(s.animFrame)
+		parts = append([]string{fmt.Sprintf("%s%s[-] %sprobing %d/%d[-]",
+			acc, frame, dim, done, total)}, parts...)
+	}
 	s.status.SetText("  " + strings.Join(parts, dim+"  ·  [-]"))
 }
 
@@ -273,6 +281,19 @@ func (s *uiState) togglePin(alias string) {
 	}
 	s.cfg = next
 	s.refresh(alias)
+}
+
+// persistAnimLevel saves the level to the config so the choice survives a
+// restart. A save failure is reported but does not revert the in-session
+// change -- the user asked for it, and losing it silently would be worse.
+func (s *uiState) persistAnimLevel() {
+	next := s.cfg.Clone()
+	next.Animations = s.animLevel.String()
+	if err := config.Save(next, s.configPath); err != nil {
+		s.modal("could not save animation setting: "+err.Error(), nil)
+		return
+	}
+	s.cfg = next
 }
 
 // refreshTree rebuilds the tree view from the current config and filter.

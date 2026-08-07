@@ -28,6 +28,10 @@ type Config struct {
 	// "full" is the six-row ASCII art, and needs at least 30 rows and 71
 	// columns or it falls back to compact. Overridden by $SSHMGR_BANNER.
 	Banner string `yaml:"banner,omitempty"`
+	// Animations sets how much of the UI moves: "off", "informative"
+	// (default -- motion only while work is happening) or "full" (adds the
+	// decorative layer). Overridden by $SSHMGR_ANIM.
+	Animations string `yaml:"animations,omitempty"`
 	// PlaybooksDir is where `sshmgr playbook` (and the TUI) look up a
 	// playbook given by bare name. Empty → ResolvePlaybooksDir's default.
 	PlaybooksDir string `yaml:"playbooks_dir,omitempty"`

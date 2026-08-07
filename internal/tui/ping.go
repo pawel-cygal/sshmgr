@@ -79,6 +79,10 @@ type pingMap struct {
 	mu   sync.RWMutex
 	m    map[string]pingStatus
 	hist map[string][]pingStatus
+
+	// done/total track a probe round in flight, for the status-bar spinner.
+	// Both zero means no round is running.
+	done, total int
 }
 
 type probeCall struct {
@@ -153,6 +157,29 @@ func (p *pingMap) History(alias string) []pingStatus {
 	return out
 }
 
+// Progress reports how far the current round has got. Both zero means no
+// round is running.
+func (p *pingMap) Progress() (done, total int) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.done, p.total
+}
+
+func (p *pingMap) setProgress(done, total int) {
+	p.mu.Lock()
+	p.done, p.total = done, total
+	p.mu.Unlock()
+}
+
+// addDone increments the round's completed count by one, once a probe has
+// resolved (successfully, unknown, or skipped early — anything that means we
+// are done considering that alias for this round).
+func (p *pingMap) addDone() {
+	p.mu.Lock()
+	p.done++
+	p.mu.Unlock()
+}
+
 // sparkCell maps a status to its sparkline glyph. Up is a full block, down a
 // low one, so the shape reads at a glance without relying on colour.
 func sparkCell(s pingStatus) rune {
@@ -216,6 +243,7 @@ func startPinger(pings *pingMap, onChange func()) (stop func()) {
 		}
 
 		var wg sync.WaitGroup
+		pings.setProgress(0, len(cfg.Hosts))
 		// Flip every alias to "connecting" before probing so the UI shows the
 		// round in progress (yellow dot until we learn online/offline).
 		for alias := range cfg.Hosts {
@@ -236,6 +264,7 @@ func startPinger(pings *pingMap, onChange func()) (stop func()) {
 				go func() {
 					defer wg.Done()
 					pings.Set(alias, jumpProbe(h.Host))
+					pings.addDone()
 				}()
 			case h.ProxyCommand != "":
 				// Hosts behind proxy_command share fate with the jump it
@@ -243,12 +272,14 @@ func startPinger(pings *pingMap, onChange func()) (stop func()) {
 				jump := config.ExtractSSHJumpAlias(h.ProxyCommand)
 				if jump == "" {
 					pings.Set(alias, statusUnknown)
+					pings.addDone()
 					continue
 				}
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
 					pings.Set(alias, jumpProbe(jump))
+					pings.addDone()
 				}()
 			case h.ProxyJump != "":
 				// Recursively follow proxy_jump aliases (in our config) to
@@ -266,12 +297,14 @@ func startPinger(pings *pingMap, onChange func()) (stop func()) {
 				jh, ok := cfg.ResolveHost(headAlias)
 				if !ok || (jh.ProxyJump != "" && seen[jh.ProxyJump]) {
 					pings.Set(alias, statusUnknown)
+					pings.addDone()
 					continue
 				}
 				if jh.ProxyCommand != "" {
 					jump := config.ExtractSSHJumpAlias(jh.ProxyCommand)
 					if jump == "" {
 						pings.Set(alias, statusUnknown)
+						pings.addDone()
 						continue
 					}
 					wg.Add(1)
@@ -282,6 +315,7 @@ func startPinger(pings *pingMap, onChange func()) (stop func()) {
 							status = statusUnknown
 						}
 						pings.Set(alias, status)
+						pings.addDone()
 					}()
 					continue
 				}
@@ -300,6 +334,7 @@ func startPinger(pings *pingMap, onChange func()) (stop func()) {
 						status = statusUnknown
 					}
 					pings.Set(alias, status)
+					pings.addDone()
 				}()
 			default:
 				port := h.Port
@@ -311,6 +346,7 @@ func startPinger(pings *pingMap, onChange func()) (stop func()) {
 				go func() {
 					defer wg.Done()
 					pings.Set(alias, tcpProbe(addr))
+					pings.addDone()
 				}()
 			}
 		}
@@ -321,6 +357,7 @@ func startPinger(pings *pingMap, onChange func()) (stop func()) {
 		for alias := range cfg.Hosts {
 			pings.Record(alias, pings.Get(alias))
 		}
+		pings.setProgress(0, 0)
 		onChange()
 	}
 

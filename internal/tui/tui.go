@@ -5,6 +5,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/systeampl/sshmgr/internal/banner"
 	"github.com/systeampl/sshmgr/internal/config"
@@ -69,6 +70,7 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		pings:         newPingMap(),
 		multiSelected: map[string]bool{},
 	}
+	state.animLevel = resolveAnimLevel(cfg, inSSHSession())
 
 	buildHostWidget(state)
 
@@ -301,6 +303,11 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 				state.openKVMMenu(alias)
 			}
 			return nil
+		case 'm':
+			state.animLevel = state.animLevel.next()
+			state.persistAnimLevel()
+			state.updateStatus()
+			return nil
 		}
 		return event
 	}
@@ -350,6 +357,18 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		app.QueueUpdateDraw(func() { state.refresh(state.currentAlias()) })
 	})
 	defer stopPing()
+
+	// One ticker for the session rather than one per round: it does nothing
+	// between rounds (the guard returns before touching the UI), which costs
+	// a channel receive every 90ms and keeps the lifecycle trivial.
+	stopSpin := state.startTicker(90*time.Millisecond, func() {
+		if _, total := state.pings.Progress(); total == 0 {
+			return
+		}
+		state.animFrame++
+		state.updateStatus()
+	})
+	defer stopSpin()
 
 	// The terminal size is not known until the first draw. Pick the banner
 	// variant then, and again on every resize, so the layout adapts instead
@@ -516,6 +535,7 @@ func fullHelpText() string {
 	b.WriteString(row("Tab", "switch flat / tree view"))
 	b.WriteString(row("S", "toggle sort: name / recently used"))
 	b.WriteString(row("*", "pin / unpin host (pinned float to the top)"))
+	b.WriteString(row("m", "cycle animation: off / informative / full"))
 	b.WriteString(row("/", "filter (alias / host / user / tag / group)"))
 	b.WriteString(row("j / k", "move down / up"))
 	b.WriteString(row("g / G", "jump to top / bottom"))
@@ -619,6 +639,11 @@ type uiState struct {
 	extraArgs     []string
 	pings         *pingMap
 	multiSelected map[string]bool
+
+	// animLevel controls how much of the UI is allowed to move; see anim.go.
+	animLevel animLevel
+	// animFrame advances the braille spinner shown while a probe round runs.
+	animFrame int
 }
 
 // updateBanner re-renders the banner text from current state. Only the
