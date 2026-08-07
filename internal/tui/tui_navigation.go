@@ -187,6 +187,14 @@ func anyContainsFold(list []string, sub string) bool {
 	return false
 }
 
+// selectRow moves the cursor to the i-th host in the current (filtered,
+// ordered) list. Tests use it; it is the only place that knows how a host
+// index becomes a widget cursor position, so the Table migration changes it
+// in exactly one place.
+func selectRow(s *uiState, i int) {
+	s.list.SetCurrentItem(i)
+}
+
 func (s *uiState) aliasAt(i int) string {
 	if i < 0 || i >= len(s.aliases) {
 		return ""
@@ -363,10 +371,12 @@ func (s *uiState) refreshList(focusAlias string) {
 		}
 	}
 	if len(s.aliases) == 0 {
-		if s.filter != "" {
-			s.details.SetText(noMatchText(s.filter))
-		} else {
-			s.details.SetText(welcomeText())
+		if s.details != nil {
+			if s.filter != "" {
+				s.details.SetText(noMatchText(s.filter))
+			} else {
+				s.details.SetText(welcomeText())
+			}
 		}
 		return
 	}

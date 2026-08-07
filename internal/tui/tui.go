@@ -70,18 +70,7 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		multiSelected: map[string]bool{},
 	}
 
-	state.list = tview.NewList().
-		ShowSecondaryText(false).
-		SetHighlightFullLine(true).
-		SetMainTextColor(theme.Current.Text).
-		SetSelectedTextColor(theme.Current.SelText).
-		SetSelectedBackgroundColor(theme.Current.Selection)
-	state.list.SetBorder(true).
-		SetTitle(" hosts (flat) ").
-		SetTitleAlign(tview.AlignLeft).
-		SetBorderColor(theme.Current.Primary).
-		SetTitleColor(theme.Current.Primary).
-		SetBorderPadding(0, 0, 1, 1)
+	buildHostWidget(state)
 
 	state.tree = tview.NewTreeView().
 		SetGraphics(true).
@@ -387,6 +376,23 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		return "", ActionNone, nil, err
 	}
 	return state.selected, state.action, state.extraArgs, nil
+}
+
+// buildHostWidget constructs the flat host view and stores it on s. Extracted
+// from Run so tests can build the widget without an Application.
+func buildHostWidget(s *uiState) {
+	s.list = tview.NewList().
+		ShowSecondaryText(false).
+		SetHighlightFullLine(true).
+		SetMainTextColor(theme.Current.Text).
+		SetSelectedTextColor(theme.Current.SelText).
+		SetSelectedBackgroundColor(theme.Current.Selection)
+	s.list.SetBorder(true).
+		SetTitle(" hosts (flat) ").
+		SetTitleAlign(tview.AlignLeft).
+		SetBorderColor(theme.Current.Primary).
+		SetTitleColor(theme.Current.Primary).
+		SetBorderPadding(0, 0, 1, 1)
 }
 
 const (

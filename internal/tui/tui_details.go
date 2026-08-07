@@ -66,6 +66,12 @@ func connectionString(h config.HostConfig) string {
 }
 
 func (s *uiState) showDetails(alias string) {
+	// s.details is nil in tests that build a uiState without the full widget
+	// tree (newTestState only builds the host list). Guard rather than
+	// require every such test to populate an unrelated widget.
+	if s.details == nil {
+		return
+	}
 	if alias == "" {
 		s.details.SetText("")
 		return
