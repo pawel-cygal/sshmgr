@@ -138,6 +138,52 @@ func TestEmptyAndUnmatchedListsResolveToEmpty(t *testing.T) {
 	}
 }
 
+// TestEmptyRefreshLeavesASelectableRow guards against a hang: tview's
+// InputHandler moves the cursor by scanning forward/backward for the next
+// cell that is not NotSelectable, in a loop that only exits by finding one or
+// by reaching the exact last cell in the scan direction. If a refresh with
+// zero matches left the table with no selectable body row at all (every
+// header cell is SetSelectable(false)), the very next j/k/Down/Up would spin
+// forever -- this does not send that keystroke (a regression here would hang
+// the test suite), it asserts the precondition that makes the loop
+// terminate: a selectable cell exists at the selected row, and it carries no
+// alias reference so Enter stays inert.
+func TestEmptyRefreshLeavesASelectableRow(t *testing.T) {
+	check := func(t *testing.T, s *uiState) {
+		t.Helper()
+		row, _ := s.table.GetSelection()
+		if row < 1 {
+			t.Fatalf("selected row = %d, want a body row (>= 1)", row)
+		}
+		if got := s.aliasAtRow(row); got != "" {
+			t.Errorf("aliasAtRow(%d) = %q, want empty (placeholder must carry no reference)", row, got)
+		}
+		selectable := false
+		for col := 0; col < colCount; col++ {
+			if cell := s.table.GetCell(row, col); cell != nil && !cell.NotSelectable {
+				selectable = true
+				break
+			}
+		}
+		if !selectable {
+			t.Errorf("no selectable cell on row %d -- the next j/k would hang tview's InputHandler", row)
+		}
+	}
+
+	t.Run("empty config", func(t *testing.T) {
+		s := newTestState(t, map[string]config.HostConfig{})
+		s.refreshList("")
+		check(t, s)
+	})
+
+	t.Run("filter matches nothing", func(t *testing.T) {
+		s := newTestState(t, fixture())
+		s.filter = "tag:nonesuch"
+		s.refreshList("")
+		check(t, s)
+	})
+}
+
 // A 388-host config is the real-world case; make sure nothing is quadratic or
 // index-fragile at that size.
 func TestMappingHoldsAcrossALargeFleet(t *testing.T) {

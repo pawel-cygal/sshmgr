@@ -430,6 +430,21 @@ func (s *uiState) refreshList(focusAlias string) {
 	}
 
 	if len(s.aliases) == 0 {
+		// A selectable body row must exist even with nothing to show it: with
+		// every row gone (the header cells are all SetSelectable(false)),
+		// tview's InputHandler has no cell to land the cursor on and its
+		// forward/backward search for the next selectable cell spins
+		// forever on the next j/k/Down/Up. The cell carries no reference, so
+		// aliasAtRow reads it back as "" and SetSelectedFunc's a != ""
+		// guard keeps Enter inert on it.
+		placeholder := "(no hosts)"
+		if s.filter != "" {
+			placeholder = "(no matches)"
+		}
+		s.table.SetCell(1, colAlias, tview.NewTableCell(placeholder).
+			SetTextColor(t.Dim).SetMaxWidth(hostColAlias))
+		selectRow(s, 0)
+
 		if s.details != nil {
 			if s.filter != "" {
 				s.details.SetText(noMatchText(s.filter))
@@ -446,8 +461,13 @@ func (s *uiState) refreshList(focusAlias string) {
 			focusIdx = i
 		}
 	}
+	// selectRow's underlying Table.Select() call unconditionally invokes the
+	// SetSelectionChangedFunc handler wired in Run (it fires even when
+	// reselecting the same row), which already calls showDetails. An
+	// explicit call here would render the details pane twice per refresh --
+	// including every ping tick -- and detailsText reads the forward
+	// registry off disk each time.
 	selectRow(s, focusIdx)
-	s.showDetails(s.aliases[focusIdx])
 }
 
 // lastLoginAge renders how long ago the host was last used, in the four

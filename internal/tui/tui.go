@@ -308,7 +308,9 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 	state.table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Rune() {
 		case 'g':
-			state.table.Select(1, 0)
+			if n := state.table.GetRowCount(); n > 1 {
+				state.table.Select(1, 0)
+			}
 			return nil
 		case 'G':
 			if n := state.table.GetRowCount(); n > 1 {
@@ -383,12 +385,16 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 }
 
 // hostCol* are the column widths of the flat host table, sized for the 58-column
-// left pane: 58 minus two border columns and two padding columns leaves 54.
+// left pane: 58 minus two border columns and two padding columns leaves 54
+// usable inner columns. tview inserts a one-cell separator after every
+// column, so the 5-column layout (mark/dot, alias, host, tags, last) spends 4
+// of those 54 cells on separators before any content is drawn.
 //
-//	bar(1) + dot(1) + gap(1) + alias(14) + host(22) + tags(11) + last(4) = 54
+//	bar/dot/gap(3) + alias(14) + host(18) + tags(11) + last(4) = 50 content
+//	+ 4 inter-column separators = 54 usable
 const (
 	hostColAlias = 14
-	hostColHost  = 22
+	hostColHost  = 18
 	hostColTags  = 11
 	hostColLast  = 4
 )
