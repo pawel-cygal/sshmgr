@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gdamore/tcell/v2"
+
 	"github.com/systeampl/sshmgr/internal/config"
 )
 
@@ -97,6 +99,47 @@ func TestAdvanceSpinnerDuringRound(t *testing.T) {
 	}
 	if s.animFrame != 1 {
 		t.Errorf("animFrame = %d, want 1", s.animFrame)
+	}
+}
+
+// TestMixColorBoundaries pins the interpolation endpoints: t=0 must return
+// exactly the first colour and t=1 exactly the second, with no off-by-one
+// drift. That drift would be invisible by eye but wrong.
+func TestMixColorBoundaries(t *testing.T) {
+	a := tcell.NewRGBColor(10, 20, 30)
+	b := tcell.NewRGBColor(200, 150, 100)
+
+	if got := mixColor(a, b, 0); got != a {
+		ar, ag, ab := a.RGB()
+		gr, gg, gb := got.RGB()
+		t.Errorf("mixColor(a, b, 0) = rgb(%d,%d,%d), want rgb(%d,%d,%d)", gr, gg, gb, ar, ag, ab)
+	}
+	if got := mixColor(a, b, 1); got != b {
+		br, bg, bb := b.RGB()
+		gr, gg, gb := got.RGB()
+		t.Errorf("mixColor(a, b, 1) = rgb(%d,%d,%d), want rgb(%d,%d,%d)", gr, gg, gb, br, bg, bb)
+	}
+	// Out-of-range t clamps rather than extrapolates.
+	if got := mixColor(a, b, -1); got != a {
+		t.Errorf("mixColor(a, b, -1) = %v, want clamped to a", got)
+	}
+	if got := mixColor(a, b, 2); got != b {
+		t.Errorf("mixColor(a, b, 2) = %v, want clamped to b", got)
+	}
+}
+
+// TestStartDecorativeTickerNotFullSpawnsNoGoroutine confirms that with the
+// level anywhere below full, cycling never creates the decorative goroutine.
+func TestStartDecorativeTickerNotFullSpawnsNoGoroutine(t *testing.T) {
+	for _, lvl := range []animLevel{animOff, animInformative} {
+		s := &uiState{animLevel: lvl}
+		before := runtime.NumGoroutine()
+		stop := s.startDecorativeTicker()
+		defer stop()
+		time.Sleep(10 * time.Millisecond)
+		if after := runtime.NumGoroutine(); after > before {
+			t.Errorf("startDecorativeTicker(%v) spawned a goroutine: before=%d after=%d", lvl, before, after)
+		}
 	}
 }
 

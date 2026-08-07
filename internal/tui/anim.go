@@ -1,12 +1,16 @@
 package tui
 
 import (
+	"math"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/gdamore/tcell/v2"
+
 	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/theme"
 )
 
 // animLevel is how much of the UI is allowed to move.
@@ -114,6 +118,40 @@ func (s *uiState) startTicker(interval time.Duration, tick func()) func() {
 	}()
 	var once sync.Once
 	return func() { once.Do(func() { close(stopCh) }) }
+}
+
+// mixColor interpolates between two colours. A truecolor terminal renders the
+// intermediate steps exactly; a 256-colour one approximates them, which is
+// why the decorative layer is opt-in rather than default.
+func mixColor(a, b tcell.Color, t float64) tcell.Color {
+	if t < 0 {
+		t = 0
+	} else if t > 1 {
+		t = 1
+	}
+	ar, ag, ab := a.RGB()
+	br, bg, bb := b.RGB()
+	return tcell.NewRGBColor(
+		ar+int32(float64(br-ar)*t),
+		ag+int32(float64(bg-ag)*t),
+		ab+int32(float64(bb-ab)*t),
+	)
+}
+
+// startDecorativeTicker breathes the focused pane's border. Returns a no-op
+// stop unless the level is full, so the caller needs no special case.
+func (s *uiState) startDecorativeTicker() func() {
+	if s.animLevel != animFull {
+		return func() {}
+	}
+	frame := 0
+	return s.startTicker(120*time.Millisecond, func() {
+		frame++
+		phase := (math.Sin(float64(frame)/12) + 1) / 2
+		c := mixColor(theme.Current.UnfocusBdr, theme.Current.FocusBdr, phase)
+		s.table.SetBorderColor(c)
+		s.tree.SetBorderColor(c)
+	})
 }
 
 // advanceSpinner steps the spinner frame if a probe round is in flight, and

@@ -306,6 +306,13 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		case 'm':
 			state.animLevel = state.animLevel.next()
 			state.persistAnimLevel()
+			state.stopDecor()
+			state.stopDecor = state.startDecorativeTicker()
+			if state.animLevel != animFull {
+				// leave the border at its resting colour
+				state.table.SetBorderColor(theme.Current.Primary)
+				state.tree.SetBorderColor(theme.Current.Primary)
+			}
 			state.updateStatus()
 			return nil
 		}
@@ -367,6 +374,9 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		}
 	})
 	defer stopSpin()
+
+	state.stopDecor = state.startDecorativeTicker()
+	defer func() { state.stopDecor() }()
 
 	// The terminal size is not known until the first draw. Pick the banner
 	// variant then, and again on every resize, so the layout adapts instead
@@ -642,6 +652,9 @@ type uiState struct {
 	animLevel animLevel
 	// animFrame advances the braille spinner shown while a probe round runs.
 	animFrame int
+	// stopDecor stops the decorative breathing-border ticker. The m handler
+	// restarts it whenever the level is cycled at runtime; see anim.go.
+	stopDecor func()
 }
 
 // updateBanner re-renders the banner text from current state. Only the
