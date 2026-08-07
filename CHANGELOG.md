@@ -35,3 +35,27 @@ All notable changes to sshmgr are documented here. The project follows
   host details pane, and a hint at connect when the chain is set to manual. The
   details pane also names keyring/command/prompt password backends instead of
   showing an empty `pass:` field.
+
+### TUI
+
+- Five new colour palettes — `catppuccin`, `tokyonight`, `nord`, `rosepine`
+  and `gruvbox` — alongside the existing `default`, `hacker` and `cyberpunk`,
+  selectable with `theme:` in the config or `SSHMGR_THEME`. The default
+  theme and every existing colour are unchanged; the new palettes are
+  opt-in.
+- About screen with the SysTeam wolf, rendered as half-block cells: `F1` in
+  the TUI, or `sshmgr about` from the shell. Shows version, commit, config
+  path, host count and license. In the TUI the logo is skipped on
+  terminals with fewer than 256 colours or narrower than 100 columns;
+  `sshmgr about` skips it whenever stdout is not a terminal.
+- Panes now have rounded borders. Focus is signalled by border colour
+  rather than a heavier line.
+- The banner adapts to the terminal: the six-row ASCII art only when there
+  are at least 30 rows and 80 columns, otherwise a one-row line carrying
+  version, config path, theme, host count and active forwards. It follows
+  a resize without a restart.
+- The footer drops to a single row below 24 terminal rows. The full keymap
+  remains in the `?` overlay.
+- The details panel is grouped into labelled sections — CONNECTION,
+  MEMBERSHIP, LOGIN STEPS, KVM, COMMANDS, ACTIVE FORWARDS, ACTIONS — and
+  shows the host as a connection string you could paste into `ssh`.

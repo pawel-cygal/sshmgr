@@ -316,7 +316,7 @@ func TestPill(t *testing.T) {
 }
 
 func TestHelpTextCoversFooterActions(t *testing.T) {
-	got := helpText()
+	got := helpText(30)
 	for _, label := range []string{
 		"shell", "sftp", "files", "fwd", "snippet", "exec", "watch", "playbook",
 		"mark", "tree", "sort", "host", "group", "filter", "help", "quit",
@@ -436,6 +436,116 @@ func TestFullHelpDocumentsEscalationHotkey(t *testing.T) {
 	for _, want := range []string{"Inside an SSH session", "~r", "~~", "escalate_key"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("fullHelpText missing %q", want)
+		}
+	}
+}
+
+func TestDetailsTextSectionOrder(t *testing.T) {
+	cfg := &config.Config{
+		Hosts: map[string]config.HostConfig{
+			"kube01": {
+				Host: "10.0.0.11", Port: 22, User: "root",
+				Key:    "/home/me/.ssh/id_ed25519",
+				Groups: []string{"prod"}, Tags: []string{"k8s"},
+			},
+		},
+		Groups: map[string]config.GroupDefaults{},
+	}
+	s := &uiState{cfg: cfg}
+	got := stripColorTags(detailsText(s, "kube01"))
+
+	for _, want := range []string{"CONNECTION", "root@10.0.0.11:22", "MEMBERSHIP", "prod"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("details text missing %q\n---\n%s", want, got)
+		}
+	}
+	iConn := strings.Index(got, "CONNECTION")
+	iMemb := strings.Index(got, "MEMBERSHIP")
+	if iConn > iMemb {
+		t.Errorf("CONNECTION (at %d) must precede MEMBERSHIP (at %d)", iConn, iMemb)
+	}
+}
+
+func TestDetailsTextOmitsEmptySections(t *testing.T) {
+	cfg := &config.Config{
+		Hosts: map[string]config.HostConfig{
+			"plain": {Host: "10.0.0.99", Port: 22},
+		},
+		Groups: map[string]config.GroupDefaults{},
+	}
+	s := &uiState{cfg: cfg}
+	got := stripColorTags(detailsText(s, "plain"))
+
+	for _, absent := range []string{"MEMBERSHIP", "LOGIN STEPS", "kvm"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("details text for a bare host should not contain %q\n---\n%s", absent, got)
+		}
+	}
+	if !strings.Contains(got, "CONNECTION") {
+		t.Errorf("CONNECTION must always be present\n---\n%s", got)
+	}
+}
+
+func TestDetailsTextRendersConnectionString(t *testing.T) {
+	cases := []struct {
+		name string
+		host config.HostConfig
+		want string
+	}{
+		{"user and port", config.HostConfig{Host: "h", Port: 2222, User: "adm"}, "adm@h:2222"},
+		{"no user", config.HostConfig{Host: "h", Port: 22}, "h:22"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Hosts:  map[string]config.HostConfig{"x": tc.host},
+				Groups: map[string]config.GroupDefaults{},
+			}
+			s := &uiState{cfg: cfg}
+			got := stripColorTags(detailsText(s, "x"))
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("want connection string %q in\n%s", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestAboutRowsContent(t *testing.T) {
+	rows := aboutRows("0.9.1", "c2173ca", "~/.sshmgr.yaml", 20)
+
+	labels := map[string]string{}
+	for _, r := range rows {
+		labels[r[0]] = r[1]
+	}
+	for _, want := range []string{"version", "config", "hosts", "license"} {
+		if _, ok := labels[want]; !ok {
+			t.Errorf("aboutRows is missing the %q row: %v", want, rows)
+		}
+	}
+	if got := labels["version"]; !strings.Contains(got, "0.9.1") || !strings.Contains(got, "c2173ca") {
+		t.Errorf("version row = %q, want it to carry both version and commit", got)
+	}
+	if got := labels["config"]; got != "~/.sshmgr.yaml" {
+		t.Errorf("config row = %q, want the path verbatim", got)
+	}
+	if got := labels["hosts"]; got != "20" {
+		t.Errorf("hosts row = %q, want \"20\"", got)
+	}
+}
+
+func TestAboutRowsHandlesUnknownBuildInfo(t *testing.T) {
+	// `go install module@version` cannot inject linker flags, so an
+	// installed binary can legitimately report an unknown commit. The
+	// about screen must stay readable rather than printing a bare comma.
+	rows := aboutRows("dev", "unknown", "/etc/sshmgr.yaml", 0)
+	for _, r := range rows {
+		if r[0] == "version" {
+			if strings.Contains(r[1], "unknown") {
+				t.Errorf("version row = %q, want the unknown commit omitted", r[1])
+			}
+			if !strings.Contains(r[1], "dev") {
+				t.Errorf("version row = %q, want it to still carry the version", r[1])
+			}
 		}
 	}
 }

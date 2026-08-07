@@ -63,7 +63,7 @@ func Suggest(w io.Writer, argv []string, word string) error {
 }
 
 var subcommands = []string{
-	"ui", "list", "groups", "info", "add", "edit", "rm", "trust",
+	"ui", "about", "list", "groups", "info", "add", "edit", "rm", "trust",
 	"theme", "keyring", "scp", "sftp", "files", "fwd", "kvm", "exec", "watch",
 	"rotate-key", "import", "export", "playbook", "lint", "history",
 	"completion", "version", "help",

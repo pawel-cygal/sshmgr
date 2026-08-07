@@ -42,6 +42,8 @@ func main() {
 		usage(os.Stdout)
 	case "ui":
 		cmdUI()
+	case "about":
+		cmdAbout(args[1:])
 	case "list", "ls":
 		cmdList(args[1:])
 	case "groups":
@@ -146,6 +148,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "                              run an Ansible playbook against selected hosts")
 	fmt.Fprintln(w, "  sshmgr lint [--json]        validate config (groups, refs, keys, snippets)")
 	fmt.Fprintln(w, "  sshmgr version [--json]     print build and platform information")
+	fmt.Fprintln(w, "  sshmgr about                print the logo, build and config summary")
 	fmt.Fprintln(w, "  sshmgr completion <shell>   emit shell completion (bash|zsh|fish)")
 	fmt.Fprintln(w, "  sshmgr help                 show this help")
 	fmt.Fprintln(w, "")
@@ -157,6 +160,8 @@ func cmdUI() {
 	if err != nil {
 		fatal(err.Error())
 	}
+	info := currentBuildInfo()
+	tui.SetBuildInfo(info.Version, info.Commit)
 	alias, action, extraArgs, err := tui.Run(cfg, path)
 	if err != nil {
 		fatal(err.Error())

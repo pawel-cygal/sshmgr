@@ -18,11 +18,24 @@ type Palette struct {
 	// AccentB is a secondary accent used to distinguish things that need to
 	// stand out against Primary (e.g., active panel vs inactive in the file
 	// manager, secondary highlights).
-	AccentB    tcell.Color
-	Text       tcell.Color // ordinary text (host names, file names)
-	Dim        tcell.Color // metadata (sizes, mtimes, secondary chips)
-	Inverse    tcell.Color // text on highlight (almost always near-black)
-	Selection  tcell.Color // selection background (usually = Primary)
+	AccentB   tcell.Color
+	Text      tcell.Color // ordinary text (host names, file names)
+	Dim       tcell.Color // metadata (sizes, mtimes, secondary chips)
+	Inverse   tcell.Color // text on highlight (almost always near-black)
+	Selection tcell.Color // selection background (usually = Primary)
+	// SelText is the foreground on a selected row. Before this slot existed
+	// the foreground was pinned to Inverse (near-black), which is why every
+	// palette had to pick a very light Selection background. With SelText
+	// free, a palette can pair a subtle tint with its own readable
+	// foreground.
+	SelText tcell.Color
+	// Success marks a reachable host / an ok result. Distinct from Primary,
+	// which is structural (borders, titles).
+	Success tcell.Color
+	// PanelBg is the panel background. Left as tcell.ColorDefault by
+	// palettes that want the terminal's own background (and therefore its
+	// transparency) to show through.
+	PanelBg    tcell.Color
 	FocusBdr   tcell.Color // border color for focused/active widget
 	UnfocusBdr tcell.Color // border color for unfocused widget
 	FieldBg    tcell.Color // input field / form field background
@@ -40,6 +53,7 @@ func (p Palette) DimTag() string     { return "[" + colorName(p.Dim) + "]" }
 func (p Palette) HelpKeyTag() string { return "[" + colorName(p.HelpKey) + "]" }
 func (p Palette) WarningTag() string { return "[" + colorName(p.Warning) + "]" }
 func (p Palette) ErrorTag() string   { return "[" + colorName(p.Error) + "]" }
+func (p Palette) SuccessTag() string { return "[" + colorName(p.Success) + "]" }
 
 // ColorTag returns the bare tview color-tag name for c (without brackets),
 // e.g. "aqua" or "#00ff41". Wrap it yourself: "[" + ColorTag(c) + "]".
@@ -91,6 +105,9 @@ var Default = Palette{
 	Dim:        tcell.ColorGray,
 	Inverse:    tcell.ColorBlack,
 	Selection:  tcell.NewRGBColor(255, 215, 0), // bright yellow
+	SelText:    tcell.ColorBlack,
+	Success:    tcell.NewRGBColor(95, 215, 95),
+	PanelBg:    tcell.ColorDefault,
 	FocusBdr:   tcell.ColorAqua,
 	UnfocusBdr: tcell.ColorGray,
 	FieldBg:    tcell.ColorDarkSlateGray,
@@ -111,6 +128,9 @@ var Hacker = Palette{
 	Dim:        tcell.NewRGBColor(60, 160, 60),
 	Inverse:    tcell.ColorBlack,
 	Selection:  tcell.NewRGBColor(255, 215, 0), // bright yellow
+	SelText:    tcell.ColorBlack,
+	Success:    tcell.NewRGBColor(0, 255, 65),
+	PanelBg:    tcell.ColorDefault,
 	FocusBdr:   tcell.NewRGBColor(0, 255, 65),
 	UnfocusBdr: tcell.NewRGBColor(40, 100, 40),
 	FieldBg:    tcell.NewRGBColor(0, 30, 10),
@@ -131,6 +151,9 @@ var Cyberpunk = Palette{
 	Dim:        tcell.NewRGBColor(140, 130, 180),
 	Inverse:    tcell.ColorBlack,
 	Selection:  tcell.NewRGBColor(255, 220, 70), // bright yellow — highlight bg
+	SelText:    tcell.ColorBlack,
+	Success:    tcell.NewRGBColor(94, 240, 138),
+	PanelBg:    tcell.ColorDefault,
 	FocusBdr:   tcell.NewRGBColor(0, 240, 255),
 	UnfocusBdr: tcell.NewRGBColor(80, 60, 110),
 	FieldBg:    tcell.NewRGBColor(25, 0, 45),
@@ -138,6 +161,113 @@ var Cyberpunk = Palette{
 	Warning:    tcell.NewRGBColor(255, 220, 70),
 	Error:      tcell.NewRGBColor(255, 60, 90),
 	HelpKey:    tcell.NewRGBColor(0, 240, 255),
+}
+
+// Catppuccin Mocha. Unlike the three palettes above, the new palettes use a
+// subtle surface tint for Selection rather than a shouting yellow — the
+// SelText slot makes that readable without pinning the foreground to black.
+var Catppuccin = Palette{
+	Name:       "catppuccin",
+	Primary:    tcell.NewRGBColor(137, 180, 250),
+	AccentB:    tcell.NewRGBColor(203, 166, 247),
+	Text:       tcell.NewRGBColor(205, 214, 244),
+	Dim:        tcell.NewRGBColor(127, 132, 156),
+	Inverse:    tcell.NewRGBColor(30, 30, 46),
+	Selection:  tcell.NewRGBColor(49, 50, 68),
+	SelText:    tcell.NewRGBColor(245, 224, 220),
+	Success:    tcell.NewRGBColor(166, 227, 161),
+	FocusBdr:   tcell.NewRGBColor(137, 180, 250),
+	UnfocusBdr: tcell.NewRGBColor(69, 71, 90),
+	FieldBg:    tcell.NewRGBColor(49, 50, 68),
+	FieldText:  tcell.NewRGBColor(205, 214, 244),
+	Warning:    tcell.NewRGBColor(249, 226, 175),
+	Error:      tcell.NewRGBColor(243, 139, 168),
+	HelpKey:    tcell.NewRGBColor(148, 226, 213),
+	PanelBg:    tcell.ColorDefault,
+}
+
+// Tokyo Night (storm-leaning dark).
+var TokyoNight = Palette{
+	Name:       "tokyonight",
+	Primary:    tcell.NewRGBColor(122, 162, 247),
+	AccentB:    tcell.NewRGBColor(187, 154, 247),
+	Text:       tcell.NewRGBColor(192, 202, 245),
+	Dim:        tcell.NewRGBColor(86, 95, 137),
+	Inverse:    tcell.NewRGBColor(26, 27, 38),
+	Selection:  tcell.NewRGBColor(41, 46, 66),
+	SelText:    tcell.NewRGBColor(192, 202, 245),
+	Success:    tcell.NewRGBColor(158, 206, 106),
+	FocusBdr:   tcell.NewRGBColor(122, 162, 247),
+	UnfocusBdr: tcell.NewRGBColor(47, 53, 73),
+	FieldBg:    tcell.NewRGBColor(41, 46, 66),
+	FieldText:  tcell.NewRGBColor(192, 202, 245),
+	Warning:    tcell.NewRGBColor(224, 175, 104),
+	Error:      tcell.NewRGBColor(247, 118, 142),
+	HelpKey:    tcell.NewRGBColor(125, 207, 255),
+	PanelBg:    tcell.ColorDefault,
+}
+
+// Nord.
+var Nord = Palette{
+	Name:       "nord",
+	Primary:    tcell.NewRGBColor(136, 192, 208),
+	AccentB:    tcell.NewRGBColor(180, 142, 173),
+	Text:       tcell.NewRGBColor(229, 233, 240),
+	Dim:        tcell.NewRGBColor(123, 136, 161),
+	Inverse:    tcell.NewRGBColor(46, 52, 64),
+	Selection:  tcell.NewRGBColor(59, 66, 82),
+	SelText:    tcell.NewRGBColor(236, 239, 244),
+	Success:    tcell.NewRGBColor(163, 190, 140),
+	FocusBdr:   tcell.NewRGBColor(136, 192, 208),
+	UnfocusBdr: tcell.NewRGBColor(67, 76, 94),
+	FieldBg:    tcell.NewRGBColor(59, 66, 82),
+	FieldText:  tcell.NewRGBColor(229, 233, 240),
+	Warning:    tcell.NewRGBColor(235, 203, 139),
+	Error:      tcell.NewRGBColor(191, 97, 106),
+	HelpKey:    tcell.NewRGBColor(143, 188, 187),
+	PanelBg:    tcell.ColorDefault,
+}
+
+// Rosé Pine (main).
+var RosePine = Palette{
+	Name:       "rosepine",
+	Primary:    tcell.NewRGBColor(156, 207, 216),
+	AccentB:    tcell.NewRGBColor(196, 167, 231),
+	Text:       tcell.NewRGBColor(224, 222, 244),
+	Dim:        tcell.NewRGBColor(110, 106, 134),
+	Inverse:    tcell.NewRGBColor(25, 23, 36),
+	Selection:  tcell.NewRGBColor(38, 35, 58),
+	SelText:    tcell.NewRGBColor(224, 222, 244),
+	Success:    tcell.NewRGBColor(62, 143, 168),
+	FocusBdr:   tcell.NewRGBColor(156, 207, 216),
+	UnfocusBdr: tcell.NewRGBColor(42, 39, 63),
+	FieldBg:    tcell.NewRGBColor(38, 35, 58),
+	FieldText:  tcell.NewRGBColor(224, 222, 244),
+	Warning:    tcell.NewRGBColor(246, 193, 119),
+	Error:      tcell.NewRGBColor(235, 111, 146),
+	HelpKey:    tcell.NewRGBColor(235, 188, 186),
+	PanelBg:    tcell.ColorDefault,
+}
+
+// Gruvbox (dark, medium contrast).
+var Gruvbox = Palette{
+	Name:       "gruvbox",
+	Primary:    tcell.NewRGBColor(131, 165, 152),
+	AccentB:    tcell.NewRGBColor(211, 134, 155),
+	Text:       tcell.NewRGBColor(235, 219, 178),
+	Dim:        tcell.NewRGBColor(146, 131, 116),
+	Inverse:    tcell.NewRGBColor(40, 40, 40),
+	Selection:  tcell.NewRGBColor(60, 56, 54),
+	SelText:    tcell.NewRGBColor(251, 241, 199),
+	Success:    tcell.NewRGBColor(184, 187, 38),
+	FocusBdr:   tcell.NewRGBColor(131, 165, 152),
+	UnfocusBdr: tcell.NewRGBColor(80, 73, 69),
+	FieldBg:    tcell.NewRGBColor(60, 56, 54),
+	FieldText:  tcell.NewRGBColor(235, 219, 178),
+	Warning:    tcell.NewRGBColor(250, 189, 47),
+	Error:      tcell.NewRGBColor(251, 73, 52),
+	HelpKey:    tcell.NewRGBColor(142, 192, 124),
+	PanelBg:    tcell.ColorDefault,
 }
 
 // Current is the active palette. Mutated by Set() at startup.
@@ -151,6 +281,16 @@ func Set(name string) {
 		Current = Hacker
 	case "cyberpunk", "synthwave", "neon":
 		Current = Cyberpunk
+	case "catppuccin", "mocha":
+		Current = Catppuccin
+	case "tokyonight", "tokyo-night", "tokyo":
+		Current = TokyoNight
+	case "nord":
+		Current = Nord
+	case "rosepine", "rose-pine", "rose":
+		Current = RosePine
+	case "gruvbox":
+		Current = Gruvbox
 	case "default", "system", "":
 		Current = Default
 	default:
@@ -158,9 +298,13 @@ func Set(name string) {
 	}
 }
 
-// Names lists the available theme identifiers.
+// Names lists the available theme identifiers, in the order they should be
+// offered to a user: the original three first, then the added palettes.
 func Names() []string {
-	return []string{"default", "hacker", "cyberpunk"}
+	return []string{
+		"default", "hacker", "cyberpunk",
+		"catppuccin", "tokyonight", "nord", "rosepine", "gruvbox",
+	}
 }
 
 // --- ANSI escape helpers for plain CLI output (scp/sftp REPL/status lines) ---

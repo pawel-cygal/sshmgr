@@ -20,7 +20,7 @@ func (s *uiState) openForwardMenu(alias string) {
 		SetHighlightFullLine(true).
 		SetMainTextColor(theme.Current.Text).
 		SetSecondaryTextColor(theme.Current.Dim).
-		SetSelectedTextColor(theme.Current.Inverse).
+		SetSelectedTextColor(theme.Current.SelText).
 		SetSelectedBackgroundColor(theme.Current.Selection)
 	list.SetBorder(true).
 		SetTitle(fmt.Sprintf(" forwards · %s   (Enter=run  Esc=close) ", alias)).
@@ -141,7 +141,7 @@ func (s *uiState) openForwardForm(alias string) {
 		Foreground(theme.Current.Text)
 	listSel := tcell.StyleDefault.
 		Background(theme.Current.Selection).
-		Foreground(theme.Current.Inverse).
+		Foreground(theme.Current.SelText).
 		Bold(true)
 
 	form.AddDropDown("type", fwdTypes, 0, func(_ string, i int) { typeIdx = i; updateSpecPlaceholder(specField, flags[i]) })

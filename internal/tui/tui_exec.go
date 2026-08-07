@@ -98,7 +98,7 @@ func (s *uiState) openExecPrompt() {
 		if dd, ok := form.GetFormItemByLabel("snippet (optional)").(*tview.DropDown); ok {
 			dd.SetListStyles(
 				tcell.StyleDefault.Background(tcell.ColorDefault).Foreground(theme.Current.Text),
-				tcell.StyleDefault.Background(theme.Current.Selection).Foreground(theme.Current.Inverse).Bold(true),
+				tcell.StyleDefault.Background(theme.Current.Selection).Foreground(theme.Current.SelText).Bold(true),
 			)
 		}
 	}

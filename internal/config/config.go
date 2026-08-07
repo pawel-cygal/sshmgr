@@ -23,6 +23,11 @@ type Config struct {
 	// Theme picks a UI color palette: "default" (aqua), "hacker" (matrix green),
 	// or "cyberpunk" (neon magenta/cyan). Overridden by $SSHMGR_THEME if set.
 	Theme string `yaml:"theme,omitempty"`
+	// Banner picks the TUI header: "compact" (default) is a one-row line
+	// carrying config path, theme, host count and live forward count;
+	// "full" is the six-row ASCII art, and needs at least 30 rows and 71
+	// columns or it falls back to compact. Overridden by $SSHMGR_BANNER.
+	Banner string `yaml:"banner,omitempty"`
 	// PlaybooksDir is where `sshmgr playbook` (and the TUI) look up a
 	// playbook given by bare name. Empty → ResolvePlaybooksDir's default.
 	PlaybooksDir string `yaml:"playbooks_dir,omitempty"`
