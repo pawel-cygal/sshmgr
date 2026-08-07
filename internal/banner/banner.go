@@ -50,11 +50,20 @@ type Context struct {
 	Forwards   int
 }
 
-// ChooseVariant picks the banner form for a terminal of the given size. The
-// art needs both vertical room to spare and 80 columns to render without
-// wrapping; anything less gets the compact line.
-func ChooseVariant(termHeight, termWidth int) Variant {
-	if termHeight >= fullMinHeight && termWidth >= asciiWidth {
+// ChooseVariant picks the banner form for a terminal of the given size.
+//
+// The compact line is the default at every size, because it carries
+// information the art does not -- config path, active theme, host count,
+// live forward count -- and gives the host list five more rows. Basing the
+// choice on available height instead made the redesign invisible to exactly
+// the people with the largest terminals, who saw the same six-row art as
+// before.
+//
+// wantFull opts back into the art. It still needs the vertical room and the
+// columns to render without wrapping, so an oversized request on a small
+// terminal falls back rather than clipping.
+func ChooseVariant(termHeight, termWidth int, wantFull bool) Variant {
+	if wantFull && termHeight >= fullMinHeight && termWidth >= asciiWidth {
 		return Full
 	}
 	return Compact
@@ -68,26 +77,73 @@ func Height(v Variant) int {
 	return 1
 }
 
-// Render returns the banner as a colour-tagged string for a TextView.
-func Render(v Variant, ctx Context) string {
+// Render returns the banner as a colour-tagged string for a TextView, sized
+// to fit width columns.
+//
+// The compact line has to survive a long version label and a long config
+// path together — the real-world pairing of a release label and
+// ~/.config/sshmgr/config.yaml runs past 110 columns, which silently pushed
+// the host and forward counts off the right edge. So it degrades: the parts
+// are dropped in order of how little they change during a session, and the
+// live counts are what survive.
+func Render(v Variant, ctx Context, width int) string {
 	t := theme.Current
 	if v == Full {
 		return t.PrimaryTag() + ASCII + "[-]"
 	}
+	if width <= 0 {
+		width = asciiWidth
+	}
 
-	sep := t.DimTag() + " · [-]"
-	var parts []string
-	parts = append(parts, fmt.Sprintf("%ssshmgr %s[-] %sby[-] %sSysTeam[-]",
-		t.PrimaryTag(), ctx.Version, t.DimTag(), t.AccentBTag()))
-	if ctx.ConfigPath != "" {
-		parts = append(parts, t.DimTag()+ctx.ConfigPath+"[-]")
+	// Richest first. The first layout that fits wins; the last is the floor
+	// and is emitted even if it does not fit, since something must render.
+	for _, layout := range []struct{ version, path, theme bool }{
+		{version: true, path: true, theme: true},
+		{version: true, path: true, theme: false},
+		{version: true, path: false, theme: true},
+		{version: true, path: false, theme: false},
+		{version: false, path: false, theme: false},
+	} {
+		plain, tagged := compactParts(ctx, layout.version, layout.path, layout.theme)
+		if len([]rune(plain)) <= width || !layout.version {
+			return tagged
+		}
 	}
-	if ctx.Theme != "" {
-		parts = append(parts, t.AccentBTag()+ctx.Theme+"[-]")
+	return "" // unreachable: the final layout always returns
+}
+
+// compactParts builds the compact line twice — once as plain text for
+// measuring, once with colour tags for rendering — so the two cannot drift.
+func compactParts(ctx Context, withVersion, withPath, withTheme bool) (plain, tagged string) {
+	t := theme.Current
+	var plainParts, taggedParts []string
+
+	add := func(p, g string) {
+		plainParts = append(plainParts, p)
+		taggedParts = append(taggedParts, g)
 	}
-	parts = append(parts, fmt.Sprintf("%s%d hosts[-]", t.DimTag(), ctx.Hosts))
+
+	if withVersion {
+		add(fmt.Sprintf("sshmgr %s by SysTeam", ctx.Version),
+			fmt.Sprintf("%ssshmgr %s[-] %sby[-] %sSysTeam[-]",
+				t.PrimaryTag(), ctx.Version, t.DimTag(), t.AccentBTag()))
+	} else {
+		add("sshmgr", t.PrimaryTag()+"sshmgr[-]")
+	}
+	if withPath && ctx.ConfigPath != "" {
+		add(ctx.ConfigPath, t.DimTag()+ctx.ConfigPath+"[-]")
+	}
+	if withTheme && ctx.Theme != "" {
+		add(ctx.Theme, t.AccentBTag()+ctx.Theme+"[-]")
+	}
+	add(fmt.Sprintf("%d hosts", ctx.Hosts),
+		fmt.Sprintf("%s%d hosts[-]", t.DimTag(), ctx.Hosts))
 	if ctx.Forwards > 0 {
-		parts = append(parts, fmt.Sprintf("%s%d fwd[-]", t.SuccessTag(), ctx.Forwards))
+		add(fmt.Sprintf("%d fwd", ctx.Forwards),
+			fmt.Sprintf("%s%d fwd[-]", t.SuccessTag(), ctx.Forwards))
 	}
-	return " " + strings.Join(parts, sep)
+
+	sep := " · "
+	taggedSep := t.DimTag() + " · [-]"
+	return " " + strings.Join(plainParts, sep), " " + strings.Join(taggedParts, taggedSep)
 }

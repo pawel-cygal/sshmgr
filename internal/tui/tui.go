@@ -149,7 +149,8 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		SetWrap(false)
 	state.bannerView = bannerView
 	state.bannerVariant = banner.Compact
-	bannerView.SetText(banner.Render(banner.Compact, state.bannerContext()))
+	state.wantFullBanner = resolveWantFullBanner(cfg)
+	bannerView.SetText(banner.Render(banner.Compact, state.bannerContext(), 0))
 
 	state.layout = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(bannerView, banner.Height(banner.Compact), 0, false).
@@ -363,10 +364,13 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		state.termColors = screen.Colors()
 		state.termWidth = w
 
-		want := banner.ChooseVariant(h, w)
-		if want != state.bannerVariant {
+		// The compact line's content depends on the width it has to fit, so
+		// a resize has to re-render it even when the variant is unchanged.
+		want := banner.ChooseVariant(h, w, state.wantFullBanner)
+		if want != state.bannerVariant || w != state.bannerWidth {
 			state.bannerVariant = want
-			state.bannerView.SetText(banner.Render(want, state.bannerContext()))
+			state.bannerWidth = w
+			state.bannerView.SetText(banner.Render(want, state.bannerContext(), w))
 			state.layout.ResizeItem(state.bannerView, banner.Height(want), 0)
 		}
 
@@ -556,10 +560,16 @@ type uiState struct {
 	filterInput   *tview.InputField
 	bannerView    *tview.TextView
 	bannerVariant banner.Variant
-	rightCol      *tview.Flex
-	footerRows    int
-	termColors    int
-	termWidth     int
+	// bannerWidth is the width the banner was last rendered for. The compact
+	// line drops parts to fit, so a resize changes its content.
+	bannerWidth int
+	// wantFullBanner opts into the six-row ASCII art. The compact line is
+	// the default at every terminal size; see resolveWantFullBanner.
+	wantFullBanner bool
+	rightCol       *tview.Flex
+	footerRows     int
+	termColors     int
+	termWidth      int
 
 	mode          string // modeFlat or modeTree
 	sort          string // sortName or sortRecent
@@ -579,7 +589,7 @@ func (s *uiState) updateBanner() {
 	if s.bannerVariant != banner.Compact {
 		return
 	}
-	s.bannerView.SetText(banner.Render(banner.Compact, s.bannerContext()))
+	s.bannerView.SetText(banner.Render(banner.Compact, s.bannerContext(), s.termWidth))
 }
 
 // bannerContext gathers what the compact banner shows. The forward count is
@@ -643,6 +653,25 @@ func centered(p tview.Primitive, width, height int) tview.Primitive {
 			AddItem(p, height, 1, true).
 			AddItem(nil, 0, 1, false), width, 1, true).
 		AddItem(nil, 0, 1, false)
+}
+
+// resolveWantFullBanner decides whether the user asked for the six-row ASCII
+// art instead of the compact header, using the same precedence as the theme:
+// environment override, then config, then the default. The default is
+// compact at every terminal size — the compact line carries the config path,
+// theme, host count and live forward count, none of which the art shows, and
+// it returns five rows to the host list.
+func resolveWantFullBanner(cfg *config.Config) bool {
+	v := os.Getenv("SSHMGR_BANNER")
+	if v == "" && cfg != nil {
+		v = cfg.Banner
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "full", "ascii", "art":
+		return true
+	default:
+		return false
+	}
 }
 
 // applyTheme picks a palette (env override > config > default), stores it in
