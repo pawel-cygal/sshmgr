@@ -107,6 +107,25 @@ func detailsText(s *uiState, alias string) string {
 		b.WriteString(badges + "\n")
 	}
 
+	// s.pings is nil in tests that build a uiState literal without it (see the
+	// s.details guard above for the same pattern) -- skip the section rather
+	// than require every such test to populate an unrelated pinger.
+	if s.pings != nil {
+		if hist := s.pings.History(alias); len(hist) > 0 {
+			spark, pct := availabilityLine(hist)
+			section(&b, "AVAILABILITY", ruleWidth)
+			colour := ok
+			switch {
+			case pct < 70:
+				colour = theme.Current.ErrorTag()
+			case pct < 100:
+				colour = warn
+			}
+			fmt.Fprintf(&b, "  %s%s[-]  %s%d%%[-]  %s%d rounds[-]\n",
+				colour, spark, colour, pct, dim, len(hist))
+		}
+	}
+
 	section(&b, "CONNECTION", ruleWidth)
 	fmt.Fprintf(&b, "  %s\n", connectionString(h))
 	if h.Key != "" {

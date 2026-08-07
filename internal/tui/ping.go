@@ -5,6 +5,7 @@ import (
 	"net"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,9 +70,15 @@ func (p pingStatus) color() tcell.Color {
 	}
 }
 
+// historyLen is how many probe rounds are kept per host. At the 60-second
+// round interval that is ten minutes -- long enough to catch a flap, short
+// enough to render in ten cells.
+const historyLen = 10
+
 type pingMap struct {
-	mu sync.RWMutex
-	m  map[string]pingStatus
+	mu   sync.RWMutex
+	m    map[string]pingStatus
+	hist map[string][]pingStatus
 }
 
 type probeCall struct {
@@ -94,7 +101,12 @@ func memoProbe(cache map[string]*probeCall, mu *sync.Mutex, key string, probe fu
 	return call.status
 }
 
-func newPingMap() *pingMap { return &pingMap{m: map[string]pingStatus{}} }
+func newPingMap() *pingMap {
+	return &pingMap{
+		m:    map[string]pingStatus{},
+		hist: map[string][]pingStatus{},
+	}
+}
 
 func (p *pingMap) Get(alias string) pingStatus {
 	p.mu.RLock()
@@ -106,6 +118,66 @@ func (p *pingMap) Set(alias string, s pingStatus) {
 	p.mu.Lock()
 	p.m[alias] = s
 	p.mu.Unlock()
+}
+
+// Record appends a resolved status to the host's history, evicting the oldest
+// entry past historyLen.
+//
+// statusConnecting is dropped: the pinger sets it on every alias at the start
+// of a round as a UI flash, and recording it would make every host look like
+// it flaps every minute.
+func (p *pingMap) Record(alias string, s pingStatus) {
+	if s == statusConnecting {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	h := append(p.hist[alias], s)
+	if len(h) > historyLen {
+		h = h[len(h)-historyLen:]
+	}
+	p.hist[alias] = h
+}
+
+// History returns the recorded rounds, oldest first. The returned slice is a
+// copy; callers render from it while the pinger keeps writing.
+func (p *pingMap) History(alias string) []pingStatus {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	h := p.hist[alias]
+	if len(h) == 0 {
+		return nil
+	}
+	out := make([]pingStatus, len(h))
+	copy(out, h)
+	return out
+}
+
+// sparkCell maps a status to its sparkline glyph. Up is a full block, down a
+// low one, so the shape reads at a glance without relying on colour.
+func sparkCell(s pingStatus) rune {
+	if s == statusOnline {
+		return '█'
+	}
+	return '▁'
+}
+
+// availabilityLine renders the history as a sparkline plus an uptime
+// percentage. Anything that is not statusOnline counts as down -- an unknown
+// result is not evidence the host was up.
+func availabilityLine(hist []pingStatus) (string, int) {
+	if len(hist) == 0 {
+		return "", 0
+	}
+	var b strings.Builder
+	up := 0
+	for _, s := range hist {
+		b.WriteRune(sparkCell(s))
+		if s == statusOnline {
+			up++
+		}
+	}
+	return b.String(), up * 100 / len(hist)
 }
 
 // startPinger spawns a goroutine that probes every configured alias on a
@@ -150,10 +222,6 @@ func startPinger(pings *pingMap, onChange func()) (stop func()) {
 			pings.Set(alias, statusConnecting)
 		}
 		onChange()
-		// Give the UI a moment to repaint the yellow flash — without this,
-		// fast TCP probes (LAN hosts) settle before tview's next redraw and
-		// the user never sees the connecting state.
-		time.Sleep(500 * time.Millisecond)
 		for alias := range cfg.Hosts {
 			alias := alias
 			h, _ := cfg.ResolveHost(alias)
@@ -247,6 +315,12 @@ func startPinger(pings *pingMap, onChange func()) (stop func()) {
 			}
 		}
 		wg.Wait()
+		// Record the round's resolved status once, after every probe has
+		// settled. Recording inside the probes would capture the connecting
+		// flash instead.
+		for alias := range cfg.Hosts {
+			pings.Record(alias, pings.Get(alias))
+		}
 		onChange()
 	}
 
