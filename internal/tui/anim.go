@@ -116,6 +116,18 @@ func (s *uiState) startTicker(interval time.Duration, tick func()) func() {
 	return func() { once.Do(func() { close(stopCh) }) }
 }
 
+// advanceSpinner steps the spinner frame if a probe round is in flight, and
+// reports whether anything changed. Returns false in steady state, which is
+// what keeps an idle sshmgr from repainting at all -- the central promise of
+// the informative animation level. Do not remove the early return.
+func (s *uiState) advanceSpinner() bool {
+	if _, total := s.pings.Progress(); total == 0 {
+		return false
+	}
+	s.animFrame++
+	return true
+}
+
 // spinner is the braille cycle used for in-progress work. One cell wide.
 var spinner = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 

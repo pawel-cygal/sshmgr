@@ -362,11 +362,9 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 	// between rounds (the guard returns before touching the UI), which costs
 	// a channel receive every 90ms and keeps the lifecycle trivial.
 	stopSpin := state.startTicker(90*time.Millisecond, func() {
-		if _, total := state.pings.Progress(); total == 0 {
-			return
+		if state.advanceSpinner() {
+			state.updateStatus()
 		}
-		state.animFrame++
-		state.updateStatus()
 	})
 	defer stopSpin()
 
