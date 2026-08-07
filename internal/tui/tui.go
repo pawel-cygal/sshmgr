@@ -83,7 +83,7 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		SetBorderPadding(0, 0, 1, 1)
 
 	state.leftPages = tview.NewPages().
-		AddPage(modeFlat, state.list, true, false).
+		AddPage(modeFlat, state.table, true, false).
 		AddPage(modeTree, state.tree, true, true)
 
 	state.details = tview.NewTextView().SetDynamicColors(true).SetWrap(true)
@@ -129,7 +129,7 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 	state.footerRows = 2
 
 	body := tview.NewFlex().
-		AddItem(state.leftPages, 36, 0, true).
+		AddItem(state.leftPages, 58, 0, true).
 		AddItem(right, 0, 1, false)
 
 	bannerView := tview.NewTextView().
@@ -147,13 +147,15 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 
 	state.pages = tview.NewPages().AddPage("main", state.layout, true, true)
 
-	state.list.SetChangedFunc(func(i int, _, _ string, _ rune) {
-		state.showDetails(state.aliasAt(i))
+	state.table.SetSelectionChangedFunc(func(row, col int) {
+		state.showDetails(state.aliasAtRow(row))
 	})
-	state.list.SetSelectedFunc(func(i int, _, _ string, _ rune) {
-		state.selected = state.aliasAt(i)
-		state.action = ActionConnect
-		app.Stop()
+	state.table.SetSelectedFunc(func(row, col int) {
+		if a := state.aliasAtRow(row); a != "" {
+			state.selected = a
+			state.action = ActionConnect
+			app.Stop()
+		}
 	})
 
 	state.tree.SetChangedFunc(func(node *tview.TreeNode) {
@@ -303,13 +305,15 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		return event
 	}
 
-	state.list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+	state.table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Rune() {
 		case 'g':
-			state.list.SetCurrentItem(0)
+			state.table.Select(1, 0)
 			return nil
 		case 'G':
-			state.list.SetCurrentItem(state.list.GetItemCount() - 1)
+			if n := state.table.GetRowCount(); n > 1 {
+				state.table.Select(n-1, 0)
+			}
 			return nil
 		}
 		return commonKeys(event)
@@ -378,21 +382,44 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 	return state.selected, state.action, state.extraArgs, nil
 }
 
+// hostCol* are the column widths of the flat host table, sized for the 58-column
+// left pane: 58 minus two border columns and two padding columns leaves 54.
+//
+//	bar(1) + dot(1) + gap(1) + alias(14) + host(22) + tags(11) + last(4) = 54
+const (
+	hostColAlias = 14
+	hostColHost  = 22
+	hostColTags  = 11
+	hostColLast  = 4
+)
+
+// column indices
+const (
+	colMark = iota // selection bar + status dot + gap
+	colAlias
+	colHost
+	colTags
+	colLast
+	colCount
+)
+
 // buildHostWidget constructs the flat host view and stores it on s. Extracted
 // from Run so tests can build the widget without an Application.
 func buildHostWidget(s *uiState) {
-	s.list = tview.NewList().
-		ShowSecondaryText(false).
-		SetHighlightFullLine(true).
-		SetMainTextColor(theme.Current.Text).
-		SetSelectedTextColor(theme.Current.SelText).
-		SetSelectedBackgroundColor(theme.Current.Selection)
-	s.list.SetBorder(true).
+	t := tview.NewTable().
+		SetFixed(1, 0).            // header row stays put while the body scrolls
+		SetSelectable(true, false) // whole rows, never individual cells
+	t.SetBorder(true).
 		SetTitle(" hosts (flat) ").
 		SetTitleAlign(tview.AlignLeft).
 		SetBorderColor(theme.Current.Primary).
 		SetTitleColor(theme.Current.Primary).
 		SetBorderPadding(0, 0, 1, 1)
+	t.SetSelectedStyle(tcell.StyleDefault.
+		Background(theme.Current.Selection).
+		Foreground(theme.Current.SelText).
+		Bold(true))
+	s.table = t
 }
 
 const (
@@ -554,7 +581,7 @@ type uiState struct {
 	cfg        *config.Config
 	configPath string
 
-	list          *tview.List
+	table         *tview.Table
 	tree          *tview.TreeView
 	leftPages     *tview.Pages
 	details       *tview.TextView

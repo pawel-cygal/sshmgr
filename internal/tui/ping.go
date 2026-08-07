@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"github.com/systeampl/sshmgr/internal/config"
+	"github.com/systeampl/sshmgr/internal/theme"
+
+	"github.com/gdamore/tcell/v2"
 )
 
 // pingStatus is what's currently known about a host's reachability.
@@ -33,6 +36,36 @@ func (p pingStatus) emoji() string {
 		return "🟡 "
 	default:
 		return "⚫ "
+	}
+}
+
+// glyph returns a one-cell status indicator. It replaces the emoji the List
+// needed: emoji occupy two columns and their width varies by terminal, while a
+// Table cell can carry its own colour, so a plain glyph now works.
+func (p pingStatus) glyph() string {
+	switch p {
+	case statusOnline:
+		return "●"
+	case statusOffline:
+		return "○"
+	case statusConnecting:
+		return "◐"
+	default:
+		return "◌"
+	}
+}
+
+// color returns the palette colour for the status.
+func (p pingStatus) color() tcell.Color {
+	switch p {
+	case statusOnline:
+		return theme.Current.Success
+	case statusOffline:
+		return theme.Current.Error
+	case statusConnecting:
+		return theme.Current.Warning
+	default:
+		return theme.Current.Dim
 	}
 }
 

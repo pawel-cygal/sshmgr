@@ -189,7 +189,7 @@ func (s *uiState) openForwardForm(alias string) {
 		if s.mode == modeTree {
 			s.app.SetFocus(s.tree)
 		} else {
-			s.app.SetFocus(s.list)
+			s.app.SetFocus(s.table)
 		}
 	})
 	form.
