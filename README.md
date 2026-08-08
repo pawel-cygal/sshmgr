@@ -236,6 +236,7 @@ count) sits above the two-line key footer.
 | `Tab` | toggle flat / tree view |
 | `S` | toggle sort: by name ↔ most recently used |
 | `*` | pin / unpin the host — pinned hosts float to the top of the list |
+| `m` | cycle animation level: off → informative → full → off (persists) |
 | `/` | filter — plain text, or `tag:`/`group:`/`backend:` queries |
 | `j`/`k` or arrows | navigate |
 | `g` / `G` | jump to top / bottom |
@@ -362,6 +363,7 @@ most recent).
 ```yaml
 theme: default              # default | hacker | cyberpunk | catppuccin |
                              # tokyonight | nord | rosepine | gruvbox
+animations: informative     # off | informative | full (default: informative)
 playbooks_dir: ~/.config/sshmgr/playbooks  # where `sshmgr playbook` resolves bare names
 snippets_dir: ~/.config/sshmgr/snippets    # reusable snippet libraries (see Snippets)
 snippet_glob: "*.yaml"                     # which files in snippets_dir to load
@@ -1514,6 +1516,30 @@ opt-in through `theme:` or `SSHMGR_THEME`. The original three themes
 selection highlight; each new palette instead pairs a subtler selection
 background with its own readable foreground colour, chosen so the
 highlighted row stays legible against that palette's background.
+
+## Animations
+
+Three levels control how much of the TUI is allowed to move:
+
+- `off` — repaints only in direct response to input.
+- `informative` (**default**) — motion only while work is happening (a
+  probe round, a transfer, a fleet exec); in steady state nothing repaints.
+- `full` — adds a decorative breathing border on the focused pane, which
+  needs a ticker running continuously.
+
+```bash
+SSHMGR_ANIM=off sshmgr ui       # per-session override
+```
+
+Set `animations:` in the config to persist a level (same resolution order
+as `theme:`: env var, then config, then the default), or override
+per-session with `SSHMGR_ANIM`. Press `m` in the host list to cycle
+off → informative → full → off live; the choice is saved back to the config.
+
+`full` demotes itself to `informative` inside an SSH session — the
+decorative layer repaints continuously, which is fine locally but wastes
+bandwidth down a tunnel — **unless `animations: full` is set explicitly in
+the config**, which is treated as a deliberate choice and honoured anyway.
 
 ## Debugging
 
