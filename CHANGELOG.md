@@ -73,8 +73,9 @@ All notable changes to sshmgr are documented here. The project follows
   (same env/config/default precedence as `theme:`/`animations:`). The
   previous hardcoded 60-second interval dialed a 388-host fleet far more
   often than a convenience readout needs; ten minutes across ten rounds of
-  history also gives the availability sparkline a useful span instead of
-  ten minutes. Values below the floor are clamped up rather than honoured,
+  history also gives the availability sparkline a useful span (roughly
+  1h40m) instead of ten minutes. Values below the floor are clamped up
+  rather than honoured,
   since this dials every host in the fleet each round.
 - `animations: off | informative | full` (default `informative`),
   overridable with `SSHMGR_ANIM` and cycled live with `m`; the level

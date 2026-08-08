@@ -128,11 +128,11 @@ func resolveProbeInterval(cfg *config.Config) time.Duration {
 	if cfg != nil && cfg.ProbeInterval != "" {
 		d, ok := parseProbeInterval(cfg.ProbeInterval)
 		if !ok {
-			return defaultProbeInterval
+			return clampProbeInterval(defaultProbeInterval)
 		}
 		return clampProbeInterval(d)
 	}
-	return defaultProbeInterval
+	return clampProbeInterval(defaultProbeInterval)
 }
 
 type pingMap struct {
