@@ -66,7 +66,16 @@ All notable changes to sshmgr are documented here. The project follows
   terminal's emoji width.
 - Per-host availability: the last ten probe rounds render as a sparkline
   with an uptime percentage in the details panel, under AVAILABILITY,
-  shown only once a host has history.
+  shown only once a host has history. The round count there is now
+  followed by the wall-clock span it covers (e.g. "10 rounds · 1h40m").
+- `probe_interval` (default `10m`, floor `30s`) configures how often the
+  TUI's probe round repeats, overridable with `SSHMGR_PROBE_INTERVAL`
+  (same env/config/default precedence as `theme:`/`animations:`). The
+  previous hardcoded 60-second interval dialed a 388-host fleet far more
+  often than a convenience readout needs; ten minutes across ten rounds of
+  history also gives the availability sparkline a useful span instead of
+  ten minutes. Values below the floor are clamped up rather than honoured,
+  since this dials every host in the fleet each round.
 - `animations: off | informative | full` (default `informative`),
   overridable with `SSHMGR_ANIM` and cycled live with `m`; the level
   persists across restarts. `informative` moves only while work is

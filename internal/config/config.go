@@ -32,6 +32,11 @@ type Config struct {
 	// (default -- motion only while work is happening) or "full" (adds the
 	// decorative layer). Overridden by $SSHMGR_ANIM.
 	Animations string `yaml:"animations,omitempty"`
+	// ProbeInterval sets how often the TUI's probe round repeats, as a
+	// duration string (e.g. "10m", "30s") parsed with time.ParseDuration.
+	// Default is 10 minutes; anything below the 30-second floor is clamped
+	// up. Overridden by $SSHMGR_PROBE_INTERVAL.
+	ProbeInterval string `yaml:"probe_interval,omitempty"`
 	// PlaybooksDir is where `sshmgr playbook` (and the TUI) look up a
 	// playbook given by bare name. Empty → ResolvePlaybooksDir's default.
 	PlaybooksDir string `yaml:"playbooks_dir,omitempty"`

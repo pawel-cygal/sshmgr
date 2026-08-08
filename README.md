@@ -375,6 +375,10 @@ banner: compact              # compact | full (default: compact) -- compact is a
                              # (needs >= 30 rows and 71 columns, else falls back
                              # to compact). Overridden by $SSHMGR_BANNER.
 animations: informative     # off | informative | full (default: informative)
+probe_interval: 10m         # how often the TUI's probe round repeats, parsed with
+                             # time.ParseDuration (default: 10m; floor: 30s, shorter
+                             # values are clamped up). Overridden by
+                             # $SSHMGR_PROBE_INTERVAL.
 playbooks_dir: ~/.config/sshmgr/playbooks  # where `sshmgr playbook` resolves bare names
 snippets_dir: ~/.config/sshmgr/snippets    # reusable snippet libraries (see Snippets)
 snippet_glob: "*.yaml"                     # which files in snippets_dir to load

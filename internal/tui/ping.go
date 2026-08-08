@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -70,10 +72,68 @@ func (p pingStatus) color() tcell.Color {
 	}
 }
 
-// historyLen is how many probe rounds are kept per host. At the 60-second
-// round interval that is ten minutes -- long enough to catch a flap, short
-// enough to render in ten cells.
+// historyLen is how many probe rounds are kept per host: long enough to
+// catch a flap, short enough to render in ten cells. The wall-clock span it
+// covers depends on the resolved probe interval (see resolveProbeInterval);
+// historySpan renders that span next to the round count so "10 rounds"
+// means something at a glance.
 const historyLen = 10
+
+// defaultProbeInterval is how often a probe round repeats when nothing else
+// says otherwise. sshmgr is a convenience readout of host reachability, not
+// a monitoring tool -- dialing a 388-host fleet every minute is far more
+// often than a convenience needs. Ten minutes across historyLen rounds also
+// gives the availability sparkline a useful span (roughly an hour and forty
+// minutes) instead of ten minutes.
+const defaultProbeInterval = 10 * time.Minute
+
+// minProbeInterval is the floor every resolved interval is clamped to,
+// regardless of source. This dials every host in the fleet each round; a
+// careless "1s" in the config or $SSHMGR_PROBE_INTERVAL would hammer 388
+// hosts continuously, so anything shorter is bumped up rather than honoured.
+const minProbeInterval = 30 * time.Second
+
+// parseProbeInterval parses a duration string, reporting ok=false when it
+// doesn't parse. On failure it returns defaultProbeInterval, so a caller
+// that discards ok (as resolveProbeInterval's env-var branch does, mirroring
+// parseAnimLevel's shape in anim.go) still gets a sane value.
+func parseProbeInterval(s string) (time.Duration, bool) {
+	d, err := time.ParseDuration(strings.TrimSpace(s))
+	if err != nil {
+		return defaultProbeInterval, false
+	}
+	return d, true
+}
+
+// clampProbeInterval enforces minProbeInterval. Clamping is deliberate, not
+// defensive noise: see minProbeInterval's doc comment.
+func clampProbeInterval(d time.Duration) time.Duration {
+	if d < minProbeInterval {
+		return minProbeInterval
+	}
+	return d
+}
+
+// resolveProbeInterval picks the probe round interval with the same
+// precedence resolveAnimLevel uses for the animation level (itself matching
+// the theme): environment, then config, then the default. An unparseable
+// value from either source falls back to the default rather than erroring,
+// the same way an unknown theme falls back to "default". Every resolved
+// value passes through clampProbeInterval before it is returned.
+func resolveProbeInterval(cfg *config.Config) time.Duration {
+	if v := os.Getenv("SSHMGR_PROBE_INTERVAL"); v != "" {
+		d, _ := parseProbeInterval(v)
+		return clampProbeInterval(d)
+	}
+	if cfg != nil && cfg.ProbeInterval != "" {
+		d, ok := parseProbeInterval(cfg.ProbeInterval)
+		if !ok {
+			return defaultProbeInterval
+		}
+		return clampProbeInterval(d)
+	}
+	return defaultProbeInterval
+}
 
 type pingMap struct {
 	mu   sync.RWMutex
@@ -131,7 +191,7 @@ func (p *pingMap) Set(alias string, s pingStatus) {
 //
 //   - statusConnecting is the pinger's UI flash, set on every alias at the
 //     start of a round before any probe has run. Recording it would make
-//     every host look like it flaps every minute.
+//     every host look like it flaps every round.
 //   - statusUnknown means the host was never actually contacted this round
 //     (a proxy_jump/proxy_command host we don't probe directly, or an
 //     external host with no live ControlMaster) -- unlike a genuine
@@ -223,14 +283,52 @@ func availabilityLine(hist []pingStatus) (string, int) {
 	return b.String(), up * 100 / len(hist)
 }
 
-// startPinger spawns a goroutine that probes every configured alias on a
-// 60-second interval (first round immediately). external/proxied hosts are
-// probed against their .Host:.Port; hosts with a proxy_command/proxy_jump
-// skip probing (we can't reach them from this side cheaply).
+// historySpan reports the wall-clock span that rounds of history covers at
+// interval, formatted compactly (e.g. "1h40m", "5m"). It returns "" when
+// there is nothing to span -- no rounds, or no interval -- matching the
+// AVAILABILITY section itself, which is omitted entirely until a host has
+// history.
+func historySpan(rounds int, interval time.Duration) string {
+	if rounds <= 0 || interval <= 0 {
+		return ""
+	}
+	return formatCompactDuration(time.Duration(rounds) * interval)
+}
+
+// formatCompactDuration renders d as e.g. "1h40m" or "5m": hours and
+// minutes, no trailing zero units, and seconds only when the span is under
+// a minute. This is not a general-purpose formatter -- it exists for
+// historySpan, whose input is always historyLen rounds times a probe
+// interval measured in minutes at worst tens of seconds.
+func formatCompactDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	h := d / time.Hour
+	d -= h * time.Hour
+	m := d / time.Minute
+	d -= m * time.Minute
+	sec := d / time.Second
+
+	var b strings.Builder
+	if h > 0 {
+		fmt.Fprintf(&b, "%dh", h)
+	}
+	if h > 0 || m > 0 {
+		fmt.Fprintf(&b, "%dm", m)
+	}
+	if h == 0 && m == 0 {
+		fmt.Fprintf(&b, "%ds", sec)
+	}
+	return b.String()
+}
+
+// startPinger spawns a goroutine that probes every configured alias on
+// interval (first round immediately). external/proxied hosts are probed
+// against their .Host:.Port; hosts with a proxy_command/proxy_jump skip
+// probing (we can't reach them from this side cheaply).
 //
 // onChange is invoked from a tview.Application.QueueUpdateDraw context so
 // repaints land cleanly.
-func startPinger(pings *pingMap, onChange func()) (stop func()) {
+func startPinger(pings *pingMap, interval time.Duration, onChange func()) (stop func()) {
 	stopCh := make(chan struct{})
 
 	// Cache ssh-master check results per jump within one round so we don't run
@@ -275,7 +373,7 @@ func startPinger(pings *pingMap, onChange func()) (stop func()) {
 				// External hosts: check the ssh ControlMaster status. If the
 				// user already has a master alive, mark online; otherwise
 				// unknown (we don't want to spawn fresh ssh connections
-				// every minute just for status).
+				// every round just for status).
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
@@ -379,7 +477,7 @@ func startPinger(pings *pingMap, onChange func()) (stop func()) {
 
 	go func() {
 		doRound()
-		t := time.NewTicker(60 * time.Second)
+		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
 			select {
@@ -397,7 +495,7 @@ func startPinger(pings *pingMap, onChange func()) (stop func()) {
 // probeSSHMaster returns Online when `ssh -O check <name>` reports an active
 // ControlMaster (i.e. the user already has a live SSH session to that name),
 // Unknown otherwise. We don't open fresh SSH connections — that would burn
-// Duo prompts or run knock-proxy 364 times per minute.
+// Duo prompts or run knock-proxy 364 times per round.
 func probeSSHMaster(name string) pingStatus {
 	cmd := exec.Command("ssh", "-O", "check", name)
 	cmd.Stdout = io.Discard

@@ -121,8 +121,12 @@ func detailsText(s *uiState, alias string) string {
 			case pct < 100:
 				colour = warn
 			}
-			fmt.Fprintf(&b, "  %s%s[-]  %s%d%%[-]  %s%d rounds[-]\n",
-				colour, spark, colour, pct, dim, len(hist))
+			roundsLabel := fmt.Sprintf("%d rounds", len(hist))
+			if span := historySpan(len(hist), s.probeInterval); span != "" {
+				roundsLabel += " · " + span
+			}
+			fmt.Fprintf(&b, "  %s%s[-]  %s%d%%[-]  %s%s[-]\n",
+				colour, spark, colour, pct, dim, roundsLabel)
 		}
 	}
 

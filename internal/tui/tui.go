@@ -5,6 +5,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/systeampl/sshmgr/internal/banner"
 	"github.com/systeampl/sshmgr/internal/config"
@@ -70,6 +71,7 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		multiSelected: map[string]bool{},
 	}
 	state.animLevel = resolveAnimLevel(cfg, inSSHSession())
+	state.probeInterval = resolveProbeInterval(cfg)
 
 	buildHostWidget(state)
 
@@ -361,7 +363,7 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 
 	state.refresh("")
 
-	stopPing := startPinger(state.pings, func() {
+	stopPing := startPinger(state.pings, state.probeInterval, func() {
 		app.QueueUpdateDraw(func() { state.refresh(state.currentAlias()) })
 	})
 	defer stopPing()
@@ -648,6 +650,10 @@ type uiState struct {
 
 	// animLevel controls how much of the UI is allowed to move; see anim.go.
 	animLevel animLevel
+	// probeInterval is the resolved repeat interval for probe rounds; see
+	// resolveProbeInterval in ping.go. Used to render the AVAILABILITY
+	// section's history span alongside its round count.
+	probeInterval time.Duration
 	// animFrame advances the braille spinner shown while a probe round runs.
 	animFrame int
 	// stopDecor stops the decorative breathing-border ticker. The m handler

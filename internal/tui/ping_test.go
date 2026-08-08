@@ -3,6 +3,9 @@ package tui
 import (
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/systeampl/sshmgr/internal/config"
 )
 
 func TestHistoryIsBoundedAndOrdered(t *testing.T) {
@@ -117,5 +120,71 @@ func TestAvailabilityLineOfEmptyHistory(t *testing.T) {
 	spark, pct := availabilityLine(nil)
 	if spark != "" || pct != 0 {
 		t.Errorf("empty history gave (%q, %d), want (\"\", 0)", spark, pct)
+	}
+}
+
+// TestResolveProbeIntervalPrecedence mirrors TestResolveAnimLevelPrecedence
+// in anim_test.go: environment wins over config, config wins over the
+// default, an unparseable value falls back to the default (matching how an
+// unknown theme falls back to "default"), and the 30-second floor clamps
+// anything shorter regardless of which source it came from.
+func TestResolveProbeIntervalPrecedence(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		cfg  string
+		want time.Duration
+	}{
+		{"default is ten minutes", "", "", 10 * time.Minute},
+		{"config wins over default", "", "5m", 5 * time.Minute},
+		{"env wins over config", "2m", "5m", 2 * time.Minute},
+		{"unparseable config falls back to default", "", "banana", 10 * time.Minute},
+		{"unparseable env falls back to default", "banana", "", 10 * time.Minute},
+		{"floor clamps 1s", "", "1s", 30 * time.Second},
+		{"floor clamps 10ms", "", "10ms", 30 * time.Second},
+		{"floor leaves 45s alone", "", "45s", 45 * time.Second},
+		{"env floor clamps 1s", "1s", "", 30 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SSHMGR_PROBE_INTERVAL", tc.env)
+			cfg := &config.Config{ProbeInterval: tc.cfg}
+			if got := resolveProbeInterval(cfg); got != tc.want {
+				t.Errorf("resolveProbeInterval(cfg=%q, env=%q) = %v, want %v",
+					tc.cfg, tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveProbeIntervalHandlesNilConfig(t *testing.T) {
+	t.Setenv("SSHMGR_PROBE_INTERVAL", "")
+	if got := resolveProbeInterval(nil); got != 10*time.Minute {
+		t.Errorf("nil config = %v, want 10m", got)
+	}
+}
+
+// TestHistorySpan pins the compact span formatter behind the AVAILABILITY
+// line's round count: ten rounds at the 10-minute default is "1h40m", ten
+// rounds at the 30-second floor is "5m", and no history (or no interval)
+// renders nothing rather than "0s" or similar noise.
+func TestHistorySpan(t *testing.T) {
+	cases := []struct {
+		name     string
+		rounds   int
+		interval time.Duration
+		want     string
+	}{
+		{"ten rounds at ten minutes", 10, 10 * time.Minute, "1h40m"},
+		{"ten rounds at thirty seconds", 10, 30 * time.Second, "5m"},
+		{"zero rounds", 0, 10 * time.Minute, ""},
+		{"zero interval", 10, 0, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := historySpan(tc.rounds, tc.interval); got != tc.want {
+				t.Errorf("historySpan(%d, %v) = %q, want %q", tc.rounds, tc.interval, got, tc.want)
+			}
+		})
 	}
 }
