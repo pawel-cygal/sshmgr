@@ -128,6 +128,29 @@ func TestMixColorBoundaries(t *testing.T) {
 	}
 }
 
+// TestBreatheBorderChecksLevelAtExecutionTime pins the fix for a queued-tick
+// race: QueueUpdateDraw can deliver a decorative tick after the level has
+// already changed away from full (e.g. the m handler reset the border to
+// Primary, and a tick queued just before stopDecor closed the channel lands
+// afterwards). breatheBorder must re-check the level itself and refuse to
+// hand back a colour when it is stale, rather than trusting the level it was
+// queued under.
+func TestBreatheBorderChecksLevelAtExecutionTime(t *testing.T) {
+	s := &uiState{animLevel: animInformative}
+	if _, ok := s.breatheBorder(5); ok {
+		t.Errorf("breatheBorder() ok = true with animLevel = informative, want false")
+	}
+
+	s.animLevel = animFull
+	c, ok := s.breatheBorder(5)
+	if !ok {
+		t.Fatalf("breatheBorder() ok = false with animLevel = full, want true")
+	}
+	if c == tcell.ColorDefault {
+		t.Errorf("breatheBorder() colour = ColorDefault, want an interpolated colour")
+	}
+}
+
 // TestStartDecorativeTickerNotFullSpawnsNoGoroutine confirms that with the
 // level anywhere below full, cycling never creates the decorative goroutine.
 func TestStartDecorativeTickerNotFullSpawnsNoGoroutine(t *testing.T) {

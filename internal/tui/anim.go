@@ -138,6 +138,20 @@ func mixColor(a, b tcell.Color, t float64) tcell.Color {
 	)
 }
 
+// breatheBorder returns the border colour for the given frame, and false when
+// the decorative layer is no longer active. A tick queued through
+// QueueUpdateDraw can be delivered after the level changed, so the callback
+// re-checks at execution time rather than trusting the level it was queued
+// under -- otherwise a stale tick repaints over the reset and leaves the
+// border frozen mid-breath.
+func (s *uiState) breatheBorder(frame int) (tcell.Color, bool) {
+	if s.animLevel != animFull {
+		return tcell.ColorDefault, false
+	}
+	phase := (math.Sin(float64(frame)/12) + 1) / 2
+	return mixColor(theme.Current.UnfocusBdr, theme.Current.FocusBdr, phase), true
+}
+
 // startDecorativeTicker breathes the focused pane's border. Returns a no-op
 // stop unless the level is full, so the caller needs no special case.
 func (s *uiState) startDecorativeTicker() func() {
@@ -147,8 +161,10 @@ func (s *uiState) startDecorativeTicker() func() {
 	frame := 0
 	return s.startTicker(120*time.Millisecond, func() {
 		frame++
-		phase := (math.Sin(float64(frame)/12) + 1) / 2
-		c := mixColor(theme.Current.UnfocusBdr, theme.Current.FocusBdr, phase)
+		c, ok := s.breatheBorder(frame)
+		if !ok {
+			return
+		}
 		s.table.SetBorderColor(c)
 		s.tree.SetBorderColor(c)
 	})
