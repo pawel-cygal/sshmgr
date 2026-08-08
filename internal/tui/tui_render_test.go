@@ -3,10 +3,12 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/systeampl/sshmgr/internal/theme"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 )
 
 // drawToSim renders the host table onto a simulation screen and returns the
@@ -109,15 +111,40 @@ func TestTableRowCarriesMoreThanOneColour(t *testing.T) {
 	}
 }
 
-func TestHeaderRowIsNotSelectable(t *testing.T) {
+// TestUpFromFirstHostRowStaysOffTheHeader is the real form of what used to
+// be TestHeaderRowIsNotSelectable, which called s.table.Select(0, 0)
+// directly. That made row == 0 by construction and aliasAtRow(0) == "" by
+// the row < 1 guard in aliasAtRow, regardless of any header-selectability
+// bug -- the old assertion (got != "" && row == 0) could not fail in either
+// direction and never sent a keystroke, so it exercised nothing.
+//
+// The real property is that pressing Up from the first host row must not
+// move the cursor onto the header: drive it through the table's actual
+// InputHandler, the same code path a real Up keypress takes.
+func TestUpFromFirstHostRowStaysOffTheHeader(t *testing.T) {
 	s := newTestState(t, fixture())
 	s.refreshList("")
+	selectRow(s, 0) // first host row (table row 1; row 0 is the header)
 
-	// Select the first host, then try to move above it.
-	selectRow(s, 0)
-	s.table.Select(0, 0)
+	// tview's InputHandler moves the cursor by scanning for the next
+	// selectable cell in a loop that only terminates by finding one or by
+	// reaching the scan boundary (see TestEmptyRefreshLeavesASelectableRow).
+	// A regression here could in principle hang that scan, so drive it on a
+	// goroutine and bound the wait instead of calling it inline.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler := s.table.InputHandler()
+		handler(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone), func(tview.Primitive) {})
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Up from the first host row did not return -- InputHandler hung")
+	}
+
 	row, _ := s.table.GetSelection()
-	if got := s.aliasAtRow(row); got != "" && row == 0 {
-		t.Errorf("header row resolved to alias %q, want empty", got)
+	if got := s.aliasAtRow(row); got == "" {
+		t.Errorf("Up from the first host row landed on row %d with no alias (the header, or off the table); want to stay on a host row", row)
 	}
 }

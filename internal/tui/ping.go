@@ -127,11 +127,27 @@ func (p *pingMap) Set(alias string, s pingStatus) {
 // Record appends a resolved status to the host's history, evicting the oldest
 // entry past historyLen.
 //
-// statusConnecting is dropped: the pinger sets it on every alias at the start
-// of a round as a UI flash, and recording it would make every host look like
-// it flaps every minute.
+// Two statuses are dropped, for different reasons:
+//
+//   - statusConnecting is the pinger's UI flash, set on every alias at the
+//     start of a round before any probe has run. Recording it would make
+//     every host look like it flaps every minute.
+//   - statusUnknown means the host was never actually contacted this round
+//     (a proxy_jump/proxy_command host we don't probe directly, or an
+//     external host with no live ControlMaster) -- unlike a genuine
+//     statusOffline, it is not evidence the host was down. Recording it
+//     anyway would render as a red 0% sparkline for hosts we never touched:
+//     against the maintainer's real fleet, 369 of 388 hosts (95%) are
+//     exactly this shape, which made the availability feature actively
+//     misleading rather than merely incomplete. A host we cannot probe now
+//     simply accumulates no history, so the AVAILABILITY section correctly
+//     does not appear for it instead of asserting downtime it never saw.
+//
+// A future refinement could give unknown its own glyph and compute uptime
+// over known rounds only, rather than omitting the section for that host
+// entirely -- not built here.
 func (p *pingMap) Record(alias string, s pingStatus) {
-	if s == statusConnecting {
+	if s == statusConnecting || s == statusUnknown {
 		return
 	}
 	p.mu.Lock()

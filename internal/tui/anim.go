@@ -98,8 +98,17 @@ func inSSHSession() bool {
 // startPinger: a stop channel closed exactly once, so nothing outlives the
 // application.
 //
+// wanted is consulted in the ticker goroutine, before anything is queued.
+// This is where the "no repaint in steady state" guarantee actually lives:
+// tview's QueueUpdateDraw runs a full screen.Clear()+root.Draw()+screen.Show()
+// unconditionally after the queued callback returns, regardless of whether
+// that callback changed anything. A guard inside tick (e.g. an early return)
+// only skips the callback's own work -- the draw happens anyway. Gating in
+// the goroutine, before QueueUpdateDraw is ever called, is the only way to
+// skip the draw itself. wanted may be nil, meaning always wanted.
+//
 // Returns a no-op stop when animation is off, so callers need no special case.
-func (s *uiState) startTicker(interval time.Duration, tick func()) func() {
+func (s *uiState) startTicker(interval time.Duration, wanted func() bool, tick func()) func() {
 	if s.animLevel == animOff {
 		return func() {}
 	}
@@ -112,6 +121,9 @@ func (s *uiState) startTicker(interval time.Duration, tick func()) func() {
 			case <-stopCh:
 				return
 			case <-t.C:
+				if wanted != nil && !wanted() {
+					continue
+				}
 				s.app.QueueUpdateDraw(tick)
 			}
 		}
@@ -152,14 +164,23 @@ func (s *uiState) breatheBorder(frame int) (tcell.Color, bool) {
 	return mixColor(theme.Current.UnfocusBdr, theme.Current.FocusBdr, phase), true
 }
 
-// startDecorativeTicker breathes the focused pane's border. Returns a no-op
-// stop unless the level is full, so the caller needs no special case.
+// decorWanted reports whether the decorative ticker should queue a redraw:
+// only while the level is full. Passed to startTicker so the check happens
+// in the ticker goroutine, before QueueUpdateDraw is ever called.
+func (s *uiState) decorWanted() bool {
+	return s.animLevel == animFull
+}
+
+// startDecorativeTicker breathes the table and tree borders together --
+// there is no focus tracking here (out of scope for this level), so both are
+// set on every tick regardless of which pane currently has focus. Returns a
+// no-op stop unless the level is full, so the caller needs no special case.
 func (s *uiState) startDecorativeTicker() func() {
 	if s.animLevel != animFull {
 		return func() {}
 	}
 	frame := 0
-	return s.startTicker(120*time.Millisecond, func() {
+	return s.startTicker(120*time.Millisecond, s.decorWanted, func() {
 		frame++
 		c, ok := s.breatheBorder(frame)
 		if !ok {
@@ -170,10 +191,34 @@ func (s *uiState) startDecorativeTicker() func() {
 	})
 }
 
+// spinnerWanted reports whether the spinner ticker should queue a redraw:
+// only while a probe round is in flight. Passed to startTicker so the check
+// happens in the ticker goroutine, before QueueUpdateDraw is ever called --
+// see startTicker's doc comment for why that is where the guarantee has to
+// live, not inside advanceSpinner.
+func (s *uiState) spinnerWanted() bool {
+	_, total := s.pings.Progress()
+	return total > 0
+}
+
+// startSpinTicker advances the probe-progress spinner. Returns a no-op stop
+// when animation is off, so the caller needs no special case; the m handler
+// restarts it (alongside startDecorativeTicker) on every level change so
+// cycling away from and back to a level with a live ticker works.
+func (s *uiState) startSpinTicker() func() {
+	return s.startTicker(90*time.Millisecond, s.spinnerWanted, func() {
+		if s.advanceSpinner() {
+			s.updateStatus()
+		}
+	})
+}
+
 // advanceSpinner steps the spinner frame if a probe round is in flight, and
-// reports whether anything changed. Returns false in steady state, which is
-// what keeps an idle sshmgr from repainting at all -- the central promise of
-// the informative animation level. Do not remove the early return.
+// reports whether anything changed. Returns false in steady state. This is
+// belt-and-braces: spinnerWanted already stops the ticker goroutine from
+// queueing a draw at all in steady state (see startTicker's doc comment for
+// why that is where the "no repaint" guarantee actually lives) -- this guard
+// additionally keeps the queued callback itself a no-op if it ever runs.
 func (s *uiState) advanceSpinner() bool {
 	if _, total := s.pings.Progress(); total == 0 {
 		return false

@@ -1,11 +1,15 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 
 	"github.com/systeampl/sshmgr/internal/config"
 )
@@ -72,11 +76,16 @@ func TestAnimLevelCycle(t *testing.T) {
 	}
 }
 
-// TestAdvanceSpinnerSteadyState pins the central promise of the informative
-// level: with no probe round running, advanceSpinner must report "nothing
+// TestAdvanceSpinnerSteadyState pins advanceSpinner's own half of the
+// steady-state guard: with no probe round running, it must report "nothing
 // changed" and must not touch animFrame, every time it is called. This is
-// the decision that keeps an idle sshmgr from repainting at all -- the
-// ticker in Run only calls updateStatus when advanceSpinner returns true.
+// belt-and-braces, not where the "no repaint at all" guarantee lives -- that
+// guarantee is spinnerWanted gating startTicker's goroutine before
+// QueueUpdateDraw is ever called (see startTicker's doc comment and
+// TestStartTickerSkipsQueueWhenNotWanted). Even if this guard were removed,
+// spinnerWanted would still stop the draw from happening; this test exists
+// because advanceSpinner is also unit-testable on its own and a regression
+// here would still be a bug worth catching.
 func TestAdvanceSpinnerSteadyState(t *testing.T) {
 	s := &uiState{pings: newPingMap()}
 	for i := 0; i < 3; i++ {
@@ -172,11 +181,140 @@ func TestStartDecorativeTickerNotFullSpawnsNoGoroutine(t *testing.T) {
 func TestStartTickerOffSpawnsNoGoroutine(t *testing.T) {
 	s := &uiState{animLevel: animOff}
 	before := runtime.NumGoroutine()
-	stop := s.startTicker(90*time.Millisecond, func() {})
+	stop := s.startTicker(90*time.Millisecond, nil, func() {})
 	defer stop()
 	// Give any errant goroutine a moment to start before comparing.
 	time.Sleep(10 * time.Millisecond)
 	if after := runtime.NumGoroutine(); after > before {
 		t.Errorf("startTicker(animOff) spawned a goroutine: before=%d after=%d", before, after)
+	}
+}
+
+// TestStartTickerSkipsQueueWhenNotWanted is the real test of the finding-1
+// fix: wanted is consulted in the ticker goroutine, and when it returns
+// false the tick is never handed to QueueUpdateDraw at all -- not "queued
+// but a no-op", not called at all. s.app is left nil deliberately: tview's
+// QueueUpdateDraw dereferences the Application's internal state, so if the
+// gate were ever bypassed this test would crash with a nil-pointer panic
+// instead of quietly passing.
+//
+// What this does NOT verify (out of reach without a running Application):
+// that tview's real draw loop (screen.Clear + root.Draw + screen.Show) is
+// actually skipped end-to-end when nothing is queued. That is tview's own
+// documented behaviour (QueueUpdateDraw always draws after the callback),
+// not sshmgr's to test -- the fix here is entirely about not calling it.
+func TestStartTickerSkipsQueueWhenNotWanted(t *testing.T) {
+	s := &uiState{animLevel: animInformative} // s.app stays nil on purpose
+	var wantedCalls int32
+	stop := s.startTicker(5*time.Millisecond, func() bool {
+		atomic.AddInt32(&wantedCalls, 1)
+		return false
+	}, func() {
+		t.Fatal("tick was queued despite wanted() returning false every time")
+	})
+	defer stop()
+
+	time.Sleep(50 * time.Millisecond)
+	if atomic.LoadInt32(&wantedCalls) == 0 {
+		t.Fatal("wanted() was never consulted -- the ticker goroutine isn't gating at all")
+	}
+}
+
+// TestSpinnerWantedReflectsProgress pins the predicate passed to startTicker
+// for the spinner: wanted only while a round is actually in flight.
+func TestSpinnerWantedReflectsProgress(t *testing.T) {
+	s := &uiState{pings: newPingMap()}
+	if s.spinnerWanted() {
+		t.Error("spinnerWanted() = true with no round running")
+	}
+	s.pings.setProgress(1, 5)
+	if !s.spinnerWanted() {
+		t.Error("spinnerWanted() = false with a round in progress")
+	}
+}
+
+// TestDecorWantedReflectsLevel pins the predicate passed to startTicker for
+// the decorative ticker: wanted only at animFull.
+func TestDecorWantedReflectsLevel(t *testing.T) {
+	s := &uiState{animLevel: animInformative}
+	if s.decorWanted() {
+		t.Error("decorWanted() = true at informative")
+	}
+	s.animLevel = animFull
+	if !s.decorWanted() {
+		t.Error("decorWanted() = false at full")
+	}
+}
+
+// TestPersistAnimLevelSkipsFullOverSSH pins finding 4: a config `full` must
+// never be written from inside an SSH session, because resolveAnimLevel
+// treats a config full as an explicit decision and skips the SSH demotion --
+// one stray m press down a tunnel would otherwise disable that protection
+// permanently, on every future session, on every host.
+func TestPersistAnimLevelSkipsFullOverSSH(t *testing.T) {
+	t.Setenv("SSH_CONNECTION", "1.2.3.4 1 5.6.7.8 22")
+	t.Setenv("SSH_TTY", "")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	s := &uiState{
+		cfg:        &config.Config{Hosts: map[string]config.HostConfig{}},
+		configPath: path,
+		animLevel:  animFull,
+		pages:      tview.NewPages(),
+	}
+
+	s.persistAnimLevel()
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("persistAnimLevel wrote %s for animFull inside an SSH session, want no write (err=%v)", path, err)
+	}
+	if s.cfg.Animations != "" {
+		t.Errorf("cfg.Animations = %q, want unchanged (unsaved)", s.cfg.Animations)
+	}
+}
+
+// TestPersistAnimLevelSavesFullLocally is the control: outside an SSH
+// session, full still persists exactly as before.
+func TestPersistAnimLevelSavesFullLocally(t *testing.T) {
+	t.Setenv("SSH_CONNECTION", "")
+	t.Setenv("SSH_TTY", "")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	s := &uiState{
+		cfg:        &config.Config{Hosts: map[string]config.HostConfig{}},
+		configPath: path,
+		animLevel:  animFull,
+		pages:      tview.NewPages(),
+	}
+
+	s.persistAnimLevel()
+
+	if s.cfg.Animations != "full" {
+		t.Errorf("cfg.Animations = %q, want %q", s.cfg.Animations, "full")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("persistAnimLevel did not write %s: %v", path, err)
+	}
+}
+
+// TestPersistAnimLevelSavesInformativeOverSSH confirms the SSH guard is
+// scoped to full specifically -- off and informative still persist from
+// inside an SSH session same as always.
+func TestPersistAnimLevelSavesInformativeOverSSH(t *testing.T) {
+	t.Setenv("SSH_CONNECTION", "1.2.3.4 1 5.6.7.8 22")
+	t.Setenv("SSH_TTY", "")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	s := &uiState{
+		cfg:        &config.Config{Hosts: map[string]config.HostConfig{}},
+		configPath: path,
+		animLevel:  animInformative,
+		pages:      tview.NewPages(),
+	}
+
+	s.persistAnimLevel()
+
+	if s.cfg.Animations != "informative" {
+		t.Errorf("cfg.Animations = %q, want %q", s.cfg.Animations, "informative")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("persistAnimLevel did not write %s: %v", path, err)
 	}
 }

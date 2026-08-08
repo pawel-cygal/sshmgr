@@ -46,6 +46,25 @@ func TestConnectingIsNeverRecorded(t *testing.T) {
 	}
 }
 
+// statusUnknown means the host was never contacted this round (proxy-only or
+// external without a live ControlMaster) -- it is not evidence of downtime,
+// so recording it would make an unprobed host look identical to one that was
+// actually down every round. On the real fleet this is 95% of hosts.
+func TestUnknownIsNeverRecorded(t *testing.T) {
+	p := newPingMap()
+	p.Record("h", statusOnline)
+	p.Record("h", statusUnknown)
+	p.Record("h", statusOnline)
+	for i, s := range p.History("h") {
+		if s == statusUnknown {
+			t.Errorf("history[%d] is statusUnknown, which must never be recorded", i)
+		}
+	}
+	if n := len(p.History("h")); n != 2 {
+		t.Errorf("history length %d, want 2 (the unknown write dropped)", n)
+	}
+}
+
 func TestHistoryOfUnknownAliasIsEmpty(t *testing.T) {
 	p := newPingMap()
 	if got := p.History("nope"); len(got) != 0 {

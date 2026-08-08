@@ -286,7 +286,21 @@ func (s *uiState) togglePin(alias string) {
 // persistAnimLevel saves the level to the config so the choice survives a
 // restart. A save failure is reported but does not revert the in-session
 // change -- the user asked for it, and losing it silently would be worse.
+//
+// full is never written while inSSHSession() is true: resolveAnimLevel
+// treats a config full as an explicit decision and skips the SSH demotion,
+// so one stray m press down a tunnel would otherwise turn off that
+// protection permanently, on every future session, on every host. The
+// in-session change still applies (see the m handler) -- only the write to
+// disk is skipped, and the user is told why. off and informative persist
+// from an SSH session same as always.
 func (s *uiState) persistAnimLevel() {
+	if s.animLevel == animFull && inSSHSession() {
+		s.modal("animation level full is not saved from inside an SSH session "+
+			"(it costs ~280 KB/s of repaint down the tunnel) -- set it in the "+
+			"config directly if you want it there.", nil)
+		return
+	}
 	next := s.cfg.Clone()
 	next.Animations = s.animLevel.String()
 	if err := config.Save(next, s.configPath); err != nil {
@@ -477,8 +491,8 @@ func (s *uiState) refreshList(focusAlias string) {
 	}
 
 	focusIdx := 0
-	for i, alias := range s.aliases {
-		if alias == focusAlias {
+	for i := range s.aliases {
+		if s.aliasAt(i) == focusAlias {
 			focusIdx = i
 		}
 	}

@@ -5,7 +5,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/systeampl/sshmgr/internal/banner"
 	"github.com/systeampl/sshmgr/internal/config"
@@ -308,6 +307,8 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 			state.persistAnimLevel()
 			state.stopDecor()
 			state.stopDecor = state.startDecorativeTicker()
+			state.stopSpin()
+			state.stopSpin = state.startSpinTicker()
 			if state.animLevel != animFull {
 				// leave the border at its resting colour
 				state.table.SetBorderColor(theme.Current.Primary)
@@ -366,14 +367,11 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 	defer stopPing()
 
 	// One ticker for the session rather than one per round: it does nothing
-	// between rounds (the guard returns before touching the UI), which costs
-	// a channel receive every 90ms and keeps the lifecycle trivial.
-	stopSpin := state.startTicker(90*time.Millisecond, func() {
-		if state.advanceSpinner() {
-			state.updateStatus()
-		}
-	})
-	defer stopSpin()
+	// between rounds (spinnerWanted gates the tick before it is ever queued;
+	// see anim.go), which costs a channel receive every 90ms and keeps the
+	// lifecycle trivial.
+	state.stopSpin = state.startSpinTicker()
+	defer func() { state.stopSpin() }()
 
 	state.stopDecor = state.startDecorativeTicker()
 	defer func() { state.stopDecor() }()
@@ -655,6 +653,12 @@ type uiState struct {
 	// stopDecor stops the decorative breathing-border ticker. The m handler
 	// restarts it whenever the level is cycled at runtime; see anim.go.
 	stopDecor func()
+	// stopSpin stops the probe-progress spinner ticker. The m handler
+	// restarts it too, symmetrically with stopDecor: without this, cycling
+	// from off to informative left no ticker running for the rest of the
+	// session (startTicker had already returned its no-op stop under off),
+	// and cycling to off left the previous ticker running forever.
+	stopSpin func()
 }
 
 // updateBanner re-renders the banner text from current state. Only the
