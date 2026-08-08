@@ -59,3 +59,30 @@ All notable changes to sshmgr are documented here. The project follows
 - The details panel is grouped into labelled sections — CONNECTION,
   MEMBERSHIP, LOGIN STEPS, KVM, COMMANDS, ACTIVE FORWARDS, ACTIONS — and
   shows the host as a connection string you could paste into `ssh`.
+- The flat host view is now a table — alias, host, tags and last-used
+  columns, each with its own colour — and the left pane widens from 36
+  to 58 columns to fit it. The status indicator becomes a coloured glyph
+  rather than an emoji: one column wide, and no longer dependent on the
+  terminal's emoji width.
+- Per-host availability: the last ten probe rounds render as a sparkline
+  with an uptime percentage in the details panel, under AVAILABILITY,
+  shown only once a host has history. The round count there is now
+  followed by the wall-clock span it covers (e.g. "10 rounds · 1h40m").
+- `probe_interval` (default `10m`, floor `30s`) configures how often the
+  TUI's probe round repeats, overridable with `SSHMGR_PROBE_INTERVAL`
+  (same env/config/default precedence as `theme:`/`animations:`). The
+  previous hardcoded 60-second interval dialed a 388-host fleet far more
+  often than a convenience readout needs; ten minutes across ten rounds of
+  history also gives the availability sparkline a useful span (roughly
+  1h40m) instead of ten minutes. Values below the floor are clamped up
+  rather than honoured,
+  since this dials every host in the fleet each round.
+- `animations: off | informative | full` (default `informative`),
+  overridable with `SSHMGR_ANIM` and cycled live with `m`; the level
+  persists across restarts. `informative` moves only while work is
+  happening — in steady state the TUI repaints nothing. `full` adds a
+  breathing focus border and demotes itself to `informative` inside an
+  SSH session unless `full` was set explicitly in the config.
+- A probe round now shows `n/m` progress with a braille spinner. The
+  forced 500ms pause per round is gone — it only existed to make the old
+  all-at-once flash visible.

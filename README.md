@@ -30,7 +30,9 @@ have:
 - Built-in **SCP / SFTP / 2-pane file manager** sharing the same connect
   chain (proxy_jump, proxy_command, all auth backends).
 - **Port forwarding** (-L / -R / -D SOCKS5) + **X11** + **agent forwarding**.
-- **Real-time host status** in the TUI (🟢 / 🔴 / 🟡 / ⚫).
+- **Real-time host status** in the TUI — an emoji indicator (🟢 / 🔴 / 🟡 /
+  ⚫) in the tree view, a one-cell colour glyph (`●`/`○`/`◐`/`◌`) in the flat
+  table.
 - Eight colour **themes** — `default` (aqua), `hacker` (matrix), `cyberpunk`
   (neon), `catppuccin`, `tokyonight`, `nord`, `rosepine`, `gruvbox`. The
   default is unchanged; the other seven are opt-in via `theme:` in the
@@ -236,6 +238,7 @@ count) sits above the two-line key footer.
 | `Tab` | toggle flat / tree view |
 | `S` | toggle sort: by name ↔ most recently used |
 | `*` | pin / unpin the host — pinned hosts float to the top of the list |
+| `m` | cycle animation level: off → informative → full → off (persists) |
 | `/` | filter — plain text, or `tag:`/`group:`/`backend:` queries |
 | `j`/`k` or arrows | navigate |
 | `g` / `G` | jump to top / bottom |
@@ -323,12 +326,16 @@ against itself.
 
 #### Status indicators
 
-| Icon | Meaning |
-|---|---|
-| 🟢 | online (TCP connect succeeded, or jump host's `ssh -O check` was alive) |
-| 🟡 | currently checking (refreshed every 60 s) |
-| 🔴 | offline / unreachable |
-| ⚫ | unknown (e.g. proxy-only host with no active ControlMaster) |
+The **tree** view shows a 2-column emoji per host; the **flat** table (the
+default view) shows a 1-column colour glyph in its leftmost column instead —
+same four states, sized for the table's tighter columns.
+
+| Tree emoji | Table glyph | Meaning |
+|---|---|---|
+| 🟢 | `●` (green) | online (TCP connect succeeded, or jump host's `ssh -O check` was alive) |
+| 🟡 | `◐` (yellow) | currently checking (refreshed every 60 s) |
+| 🔴 | `○` (red) | offline / unreachable |
+| ⚫ | `◌` (dim) | unknown (e.g. proxy-only host with no active ControlMaster) |
 
 #### Filtering
 
@@ -362,6 +369,16 @@ most recent).
 ```yaml
 theme: default              # default | hacker | cyberpunk | catppuccin |
                              # tokyonight | nord | rosepine | gruvbox
+banner: compact              # compact | full (default: compact) -- compact is a
+                             # one-row header with config path/theme/host count/
+                             # live forward count; full is the six-row ASCII art
+                             # (needs >= 30 rows and 71 columns, else falls back
+                             # to compact). Overridden by $SSHMGR_BANNER.
+animations: informative     # off | informative | full (default: informative)
+probe_interval: 10m         # how often the TUI's probe round repeats, parsed with
+                             # time.ParseDuration (default: 10m; floor: 30s, shorter
+                             # values are clamped up). Overridden by
+                             # $SSHMGR_PROBE_INTERVAL.
 playbooks_dir: ~/.config/sshmgr/playbooks  # where `sshmgr playbook` resolves bare names
 snippets_dir: ~/.config/sshmgr/snippets    # reusable snippet libraries (see Snippets)
 snippet_glob: "*.yaml"                     # which files in snippets_dir to load
@@ -1514,6 +1531,48 @@ opt-in through `theme:` or `SSHMGR_THEME`. The original three themes
 selection highlight; each new palette instead pairs a subtler selection
 background with its own readable foreground colour, chosen so the
 highlighted row stays legible against that palette's background.
+
+## Banner
+
+The header at the top of the TUI has two variants:
+
+- `compact` (**default**, every terminal size) — a one-row line carrying the
+  config path, active theme, host count and live forward count.
+- `full` — the six-row SysTeam ASCII art. Needs at least 30 rows and 71
+  columns; below that it falls back to `compact` regardless of the setting.
+
+```bash
+sshmgr ui                        # compact, always
+SSHMGR_BANNER=full sshmgr ui     # per-session override
+```
+
+Set `banner: full` in the config to persist the choice (same resolution
+order as `theme:`/`animations:`: env var, then config, then the default), or
+override per-session with `SSHMGR_BANNER`.
+
+## Animations
+
+Three levels control how much of the TUI is allowed to move:
+
+- `off` — repaints only in direct response to input.
+- `informative` (**default**) — motion only while work is happening (a
+  probe round, a transfer, a fleet exec); in steady state nothing repaints.
+- `full` — adds a decorative breathing border on the focused pane, which
+  needs a ticker running continuously.
+
+```bash
+SSHMGR_ANIM=off sshmgr ui       # per-session override
+```
+
+Set `animations:` in the config to persist a level (same resolution order
+as `theme:`: env var, then config, then the default), or override
+per-session with `SSHMGR_ANIM`. Press `m` in the host list to cycle
+off → informative → full → off live; the choice is saved back to the config.
+
+`full` demotes itself to `informative` inside an SSH session — the
+decorative layer repaints continuously, which is fine locally but wastes
+bandwidth down a tunnel — **unless `animations: full` is set explicitly in
+the config**, which is treated as a deliberate choice and honoured anyway.
 
 ## Debugging
 

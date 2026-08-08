@@ -66,6 +66,12 @@ func connectionString(h config.HostConfig) string {
 }
 
 func (s *uiState) showDetails(alias string) {
+	// s.details is nil in tests that build a uiState without the full widget
+	// tree (newTestState only builds the host list). Guard rather than
+	// require every such test to populate an unrelated widget.
+	if s.details == nil {
+		return
+	}
 	if alias == "" {
 		s.details.SetText("")
 		return
@@ -99,6 +105,29 @@ func detailsText(s *uiState, alias string) string {
 	}
 	if badges := hostBadges(h); badges != "" {
 		b.WriteString(badges + "\n")
+	}
+
+	// s.pings is nil in tests that build a uiState literal without it (see the
+	// s.details guard above for the same pattern) -- skip the section rather
+	// than require every such test to populate an unrelated pinger.
+	if s.pings != nil {
+		if hist := s.pings.History(alias); len(hist) > 0 {
+			spark, pct := availabilityLine(hist)
+			section(&b, "AVAILABILITY", ruleWidth)
+			colour := ok
+			switch {
+			case pct < 70:
+				colour = theme.Current.ErrorTag()
+			case pct < 100:
+				colour = warn
+			}
+			roundsLabel := fmt.Sprintf("%d rounds", len(hist))
+			if span := historySpan(len(hist), s.probeInterval); span != "" {
+				roundsLabel += " · " + span
+			}
+			fmt.Fprintf(&b, "  %s%s[-]  %s%d%%[-]  %s%s[-]\n",
+				colour, spark, colour, pct, dim, roundsLabel)
+		}
 	}
 
 	section(&b, "CONNECTION", ruleWidth)

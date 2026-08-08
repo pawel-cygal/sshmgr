@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/systeampl/sshmgr/internal/config"
 	"github.com/systeampl/sshmgr/internal/theme"
@@ -53,7 +54,7 @@ func (s *uiState) focusList() {
 	if s.mode == modeTree {
 		s.app.SetFocus(s.tree)
 	} else {
-		s.app.SetFocus(s.list)
+		s.app.SetFocus(s.table)
 	}
 }
 
@@ -70,7 +71,7 @@ func (s *uiState) toggleMode() {
 	case modeTree:
 		s.app.SetFocus(s.tree)
 	default:
-		s.app.SetFocus(s.list)
+		s.app.SetFocus(s.table)
 	}
 }
 
@@ -112,6 +113,14 @@ func (s *uiState) updateStatus() {
 	} else {
 		parts = append(parts, fmt.Sprintf("%s%d hosts[-]", dim, total))
 	}
+	if s.animLevel != animInformative {
+		parts = append(parts, dim+"anim "+s.animLevel.String()+"[-]")
+	}
+	if done, total := s.pings.Progress(); total > 0 {
+		frame := spinnerFrame(s.animFrame)
+		parts = append([]string{fmt.Sprintf("%s%s[-] %sprobing %d/%d[-]",
+			acc, frame, dim, done, total)}, parts...)
+	}
 	s.status.SetText("  " + strings.Join(parts, dim+"  ·  [-]"))
 }
 
@@ -125,7 +134,7 @@ func (s *uiState) exitFilterMode() {
 	if s.mode == modeTree {
 		s.app.SetFocus(s.tree)
 	} else {
-		s.app.SetFocus(s.list)
+		s.app.SetFocus(s.table)
 	}
 }
 
@@ -187,11 +196,46 @@ func anyContainsFold(list []string, sub string) bool {
 	return false
 }
 
+// selectRow moves the cursor to the i-th host in the current (filtered,
+// ordered) list. The +1 is the header row and lives here alone.
+func selectRow(s *uiState, i int) {
+	s.table.Select(i+1, 0)
+}
+
+// aliasAt returns the i-th alias in the current (filtered, ordered) list.
+//
+// KEEP THIS SIGNATURE AND SEMANTICS UNCHANGED. i is an index into s.aliases,
+// not a table row. Task 1's tests call it directly with that contract and must
+// keep passing without edits; overloading it to take a raw table row is what
+// this task exists to avoid.
 func (s *uiState) aliasAt(i int) string {
 	if i < 0 || i >= len(s.aliases) {
 		return ""
 	}
 	return s.aliases[i]
+}
+
+// aliasAtRow returns the alias on table row `row`, or "" if the row carries
+// none — the header, or a row past the end.
+//
+// The alias is read from the row's first cell reference rather than computed
+// from the row number. That is deliberate: a header row makes the naive
+// mapping row-1, and an off-by-one there means Enter opens a session on the
+// host above or below the one under the cursor. There is no arithmetic to get
+// wrong here.
+//
+// The two functions are named for what they consume — an index versus a row —
+// so a caller cannot pass the wrong one without the name reading wrong.
+func (s *uiState) aliasAtRow(row int) string {
+	if s.table == nil || row < 1 || row >= s.table.GetRowCount() {
+		return ""
+	}
+	cell := s.table.GetCell(row, colMark)
+	if cell == nil {
+		return ""
+	}
+	alias, _ := cell.GetReference().(string)
+	return alias
 }
 
 func (s *uiState) currentAlias() string {
@@ -205,7 +249,8 @@ func (s *uiState) currentAlias() string {
 		}
 		return ""
 	}
-	return s.aliasAt(s.list.GetCurrentItem())
+	row, _ := s.table.GetSelection()
+	return s.aliasAtRow(row)
 }
 
 // rowMarker is the 2-char list prefix for a host: multi-selection wins,
@@ -236,6 +281,33 @@ func (s *uiState) togglePin(alias string) {
 	}
 	s.cfg = next
 	s.refresh(alias)
+}
+
+// persistAnimLevel saves the level to the config so the choice survives a
+// restart. A save failure is reported but does not revert the in-session
+// change -- the user asked for it, and losing it silently would be worse.
+//
+// full is never written while inSSHSession() is true: resolveAnimLevel
+// treats a config full as an explicit decision and skips the SSH demotion,
+// so one stray m press down a tunnel would otherwise turn off that
+// protection permanently, on every future session, on every host. The
+// in-session change still applies (see the m handler) -- only the write to
+// disk is skipped, and the user is told why. off and informative persist
+// from an SSH session same as always.
+func (s *uiState) persistAnimLevel() {
+	if s.animLevel == animFull && inSSHSession() {
+		s.modal("animation level full is not saved from inside an SSH session "+
+			"(it costs ~280 KB/s of repaint down the tunnel) -- set it in the "+
+			"config directly if you want it there.", nil)
+		return
+	}
+	next := s.cfg.Clone()
+	next.Animations = s.animLevel.String()
+	if err := config.Save(next, s.configPath); err != nil {
+		s.modal("could not save animation setting: "+err.Error(), nil)
+		return
+	}
+	s.cfg = next
 }
 
 // refreshTree rebuilds the tree view from the current config and filter.
@@ -353,35 +425,106 @@ func (s *uiState) refreshList(focusAlias string) {
 			s.aliases = append(s.aliases, a)
 		}
 	}
-	s.list.Clear()
-	focusIdx := 0
+
+	t := theme.Current
+	s.table.Clear()
+
+	header := []struct {
+		text  string
+		width int
+	}{
+		{"", 3}, {"ALIAS", hostColAlias}, {"HOST", hostColHost},
+		{"TAGS", hostColTags}, {"LAST", hostColLast},
+	}
+	for col, h := range header {
+		s.table.SetCell(0, col, tview.NewTableCell(h.text).
+			SetTextColor(t.Dim).
+			SetMaxWidth(h.width).
+			SetSelectable(false))
+	}
+
 	for i, alias := range s.aliases {
 		h, _ := s.cfg.ResolveHost(alias)
-		s.list.AddItem(s.pings.Get(alias).emoji()+s.rowMarker(alias)+listRowText(alias, h), "", 0, nil)
-		if alias == focusAlias {
-			focusIdx = i
-		}
+		row := i + 1
+
+		// The alias rides on the first cell; aliasAt reads it back.
+		mark := s.rowMarker(alias)
+		dot := s.pings.Get(alias)
+		s.table.SetCell(row, colMark, tview.NewTableCell(mark+dot.glyph()).
+			SetTextColor(dot.color()).
+			SetReference(alias).
+			SetMaxWidth(3))
+		s.table.SetCell(row, colAlias, tview.NewTableCell(alias).
+			SetTextColor(t.Text).SetMaxWidth(hostColAlias))
+		s.table.SetCell(row, colHost, tview.NewTableCell(h.Host).
+			SetTextColor(t.Dim).SetMaxWidth(hostColHost))
+		s.table.SetCell(row, colTags, tview.NewTableCell(strings.Join(h.Tags, " ")).
+			SetTextColor(t.AccentB).SetMaxWidth(hostColTags))
+		s.table.SetCell(row, colLast, tview.NewTableCell(s.lastLoginAge(alias)).
+			SetTextColor(t.Dim).SetMaxWidth(hostColLast).SetAlign(tview.AlignRight))
 	}
+
 	if len(s.aliases) == 0 {
+		// A selectable body row must exist even with nothing to show it: with
+		// every row gone (the header cells are all SetSelectable(false)),
+		// tview's InputHandler has no cell to land the cursor on and its
+		// forward/backward search for the next selectable cell spins
+		// forever on the next j/k/Down/Up. The cell carries no reference, so
+		// aliasAtRow reads it back as "" and SetSelectedFunc's a != ""
+		// guard keeps Enter inert on it.
+		placeholder := "(no hosts)"
 		if s.filter != "" {
-			s.details.SetText(noMatchText(s.filter))
-		} else {
-			s.details.SetText(welcomeText())
+			placeholder = "(no matches)"
+		}
+		s.table.SetCell(1, colAlias, tview.NewTableCell(placeholder).
+			SetTextColor(t.Dim).SetMaxWidth(hostColAlias))
+		selectRow(s, 0)
+
+		if s.details != nil {
+			if s.filter != "" {
+				s.details.SetText(noMatchText(s.filter))
+			} else {
+				s.details.SetText(welcomeText())
+			}
 		}
 		return
 	}
-	s.list.SetCurrentItem(focusIdx)
-	s.showDetails(s.aliases[focusIdx])
+
+	focusIdx := 0
+	for i := range s.aliases {
+		if s.aliasAt(i) == focusAlias {
+			focusIdx = i
+		}
+	}
+	// selectRow's underlying Table.Select() call unconditionally invokes the
+	// SetSelectionChangedFunc handler wired in Run (it fires even when
+	// reselecting the same row), which already calls showDetails. An
+	// explicit call here would render the details pane twice per refresh --
+	// including every ping tick -- and detailsText reads the forward
+	// registry off disk each time.
+	selectRow(s, focusIdx)
 }
 
-// listRowText renders one row with alias + space-separated tag chips on the right.
-// tview.List's default rendering does not interpret color tags, so we keep this
-// in plain text — tags are shown in brackets so they read clearly.
-func listRowText(alias string, h config.HostConfig) string {
-	if len(h.Tags) == 0 {
-		return alias
+// lastLoginAge renders how long ago the host was last used, in the four
+// columns the LAST column has: "2h", "3d", "12h", or "—" when never.
+func (s *uiState) lastLoginAge(alias string) string {
+	e, ok := s.lastLogin(alias)
+	if !ok {
+		return "—"
 	}
-	return fmt.Sprintf("%-22s [%s]", alias, strings.Join(h.Tags, " "))
+	when, err := time.Parse(time.RFC3339, e.When)
+	if err != nil {
+		return "—"
+	}
+	d := time.Since(when)
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 // hostBadges renders a host's notable flags and tags as a one-line chip

@@ -303,7 +303,7 @@ func (s *uiState) deleteGroupPrompt() {
 			if s.mode == modeTree {
 				s.app.SetFocus(s.tree)
 			} else {
-				s.app.SetFocus(s.list)
+				s.app.SetFocus(s.table)
 			}
 			if label != "Delete" {
 				return
@@ -346,7 +346,7 @@ func (s *uiState) confirmDelete(alias string) {
 			if s.mode == modeTree {
 				s.app.SetFocus(s.tree)
 			} else {
-				s.app.SetFocus(s.list)
+				s.app.SetFocus(s.table)
 			}
 			if label != "Delete" {
 				return

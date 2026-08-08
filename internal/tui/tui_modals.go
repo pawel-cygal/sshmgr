@@ -21,7 +21,7 @@ func (s *uiState) inputPrompt(label, def string, onSubmit func(string)) {
 			if s.mode == modeTree {
 				s.app.SetFocus(s.tree)
 			} else {
-				s.app.SetFocus(s.list)
+				s.app.SetFocus(s.table)
 			}
 			onSubmit(input.GetText())
 		}).
@@ -30,7 +30,7 @@ func (s *uiState) inputPrompt(label, def string, onSubmit func(string)) {
 			if s.mode == modeTree {
 				s.app.SetFocus(s.tree)
 			} else {
-				s.app.SetFocus(s.list)
+				s.app.SetFocus(s.table)
 			}
 		}).
 		SetButtonBackgroundColor(theme.Current.Primary).

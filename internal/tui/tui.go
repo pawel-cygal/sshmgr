@@ -5,6 +5,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/systeampl/sshmgr/internal/banner"
 	"github.com/systeampl/sshmgr/internal/config"
@@ -69,19 +70,10 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		pings:         newPingMap(),
 		multiSelected: map[string]bool{},
 	}
+	state.animLevel = resolveAnimLevel(cfg, inSSHSession())
+	state.probeInterval = resolveProbeInterval(cfg)
 
-	state.list = tview.NewList().
-		ShowSecondaryText(false).
-		SetHighlightFullLine(true).
-		SetMainTextColor(theme.Current.Text).
-		SetSelectedTextColor(theme.Current.SelText).
-		SetSelectedBackgroundColor(theme.Current.Selection)
-	state.list.SetBorder(true).
-		SetTitle(" hosts (flat) ").
-		SetTitleAlign(tview.AlignLeft).
-		SetBorderColor(theme.Current.Primary).
-		SetTitleColor(theme.Current.Primary).
-		SetBorderPadding(0, 0, 1, 1)
+	buildHostWidget(state)
 
 	state.tree = tview.NewTreeView().
 		SetGraphics(true).
@@ -94,7 +86,7 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		SetBorderPadding(0, 0, 1, 1)
 
 	state.leftPages = tview.NewPages().
-		AddPage(modeFlat, state.list, true, false).
+		AddPage(modeFlat, state.table, true, false).
 		AddPage(modeTree, state.tree, true, true)
 
 	state.details = tview.NewTextView().SetDynamicColors(true).SetWrap(true)
@@ -140,7 +132,7 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 	state.footerRows = 2
 
 	body := tview.NewFlex().
-		AddItem(state.leftPages, 36, 0, true).
+		AddItem(state.leftPages, 58, 0, true).
 		AddItem(right, 0, 1, false)
 
 	bannerView := tview.NewTextView().
@@ -158,13 +150,15 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 
 	state.pages = tview.NewPages().AddPage("main", state.layout, true, true)
 
-	state.list.SetChangedFunc(func(i int, _, _ string, _ rune) {
-		state.showDetails(state.aliasAt(i))
+	state.table.SetSelectionChangedFunc(func(row, col int) {
+		state.showDetails(state.aliasAtRow(row))
 	})
-	state.list.SetSelectedFunc(func(i int, _, _ string, _ rune) {
-		state.selected = state.aliasAt(i)
-		state.action = ActionConnect
-		app.Stop()
+	state.table.SetSelectedFunc(func(row, col int) {
+		if a := state.aliasAtRow(row); a != "" {
+			state.selected = a
+			state.action = ActionConnect
+			app.Stop()
+		}
 	})
 
 	state.tree.SetChangedFunc(func(node *tview.TreeNode) {
@@ -310,17 +304,35 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 				state.openKVMMenu(alias)
 			}
 			return nil
+		case 'm':
+			state.animLevel = state.animLevel.next()
+			state.persistAnimLevel()
+			state.stopDecor()
+			state.stopDecor = state.startDecorativeTicker()
+			state.stopSpin()
+			state.stopSpin = state.startSpinTicker()
+			if state.animLevel != animFull {
+				// leave the border at its resting colour
+				state.table.SetBorderColor(theme.Current.Primary)
+				state.tree.SetBorderColor(theme.Current.Primary)
+			}
+			state.updateStatus()
+			return nil
 		}
 		return event
 	}
 
-	state.list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+	state.table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Rune() {
 		case 'g':
-			state.list.SetCurrentItem(0)
+			if n := state.table.GetRowCount(); n > 1 {
+				state.table.Select(1, 0)
+			}
 			return nil
 		case 'G':
-			state.list.SetCurrentItem(state.list.GetItemCount() - 1)
+			if n := state.table.GetRowCount(); n > 1 {
+				state.table.Select(n-1, 0)
+			}
 			return nil
 		}
 		return commonKeys(event)
@@ -351,10 +363,20 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 
 	state.refresh("")
 
-	stopPing := startPinger(state.pings, func() {
+	stopPing := startPinger(state.pings, state.probeInterval, func() {
 		app.QueueUpdateDraw(func() { state.refresh(state.currentAlias()) })
 	})
 	defer stopPing()
+
+	// One ticker for the session rather than one per round: it does nothing
+	// between rounds (spinnerWanted gates the tick before it is ever queued;
+	// see anim.go), which costs a channel receive every 90ms and keeps the
+	// lifecycle trivial.
+	state.stopSpin = state.startSpinTicker()
+	defer func() { state.stopSpin() }()
+
+	state.stopDecor = state.startDecorativeTicker()
+	defer func() { state.stopDecor() }()
 
 	// The terminal size is not known until the first draw. Pick the banner
 	// variant then, and again on every resize, so the layout adapts instead
@@ -387,6 +409,50 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 		return "", ActionNone, nil, err
 	}
 	return state.selected, state.action, state.extraArgs, nil
+}
+
+// hostCol* are the column widths of the flat host table, sized for the 58-column
+// left pane: 58 minus two border columns and two padding columns leaves 54
+// usable inner columns. tview inserts a one-cell separator after every
+// column, so the 5-column layout (mark/dot, alias, host, tags, last) spends 4
+// of those 54 cells on separators before any content is drawn.
+//
+//	bar/dot/gap(3) + alias(14) + host(18) + tags(11) + last(4) = 50 content
+//	+ 4 inter-column separators = 54 usable
+const (
+	hostColAlias = 14
+	hostColHost  = 18
+	hostColTags  = 11
+	hostColLast  = 4
+)
+
+// column indices
+const (
+	colMark = iota // selection bar + status dot + gap
+	colAlias
+	colHost
+	colTags
+	colLast
+	colCount
+)
+
+// buildHostWidget constructs the flat host view and stores it on s. Extracted
+// from Run so tests can build the widget without an Application.
+func buildHostWidget(s *uiState) {
+	t := tview.NewTable().
+		SetFixed(1, 0).            // header row stays put while the body scrolls
+		SetSelectable(true, false) // whole rows, never individual cells
+	t.SetBorder(true).
+		SetTitle(" hosts (flat) ").
+		SetTitleAlign(tview.AlignLeft).
+		SetBorderColor(theme.Current.Primary).
+		SetTitleColor(theme.Current.Primary).
+		SetBorderPadding(0, 0, 1, 1)
+	t.SetSelectedStyle(tcell.StyleDefault.
+		Background(theme.Current.Selection).
+		Foreground(theme.Current.SelText).
+		Bold(true))
+	s.table = t
 }
 
 const (
@@ -477,6 +543,7 @@ func fullHelpText() string {
 	b.WriteString(row("Tab", "switch flat / tree view"))
 	b.WriteString(row("S", "toggle sort: name / recently used"))
 	b.WriteString(row("*", "pin / unpin host (pinned float to the top)"))
+	b.WriteString(row("m", "cycle animation: off / informative / full"))
 	b.WriteString(row("/", "filter (alias / host / user / tag / group)"))
 	b.WriteString(row("j / k", "move down / up"))
 	b.WriteString(row("g / G", "jump to top / bottom"))
@@ -548,7 +615,7 @@ type uiState struct {
 	cfg        *config.Config
 	configPath string
 
-	list          *tview.List
+	table         *tview.Table
 	tree          *tview.TreeView
 	leftPages     *tview.Pages
 	details       *tview.TextView
@@ -580,6 +647,24 @@ type uiState struct {
 	extraArgs     []string
 	pings         *pingMap
 	multiSelected map[string]bool
+
+	// animLevel controls how much of the UI is allowed to move; see anim.go.
+	animLevel animLevel
+	// probeInterval is the resolved repeat interval for probe rounds; see
+	// resolveProbeInterval in ping.go. Used to render the AVAILABILITY
+	// section's history span alongside its round count.
+	probeInterval time.Duration
+	// animFrame advances the braille spinner shown while a probe round runs.
+	animFrame int
+	// stopDecor stops the decorative breathing-border ticker. The m handler
+	// restarts it whenever the level is cycled at runtime; see anim.go.
+	stopDecor func()
+	// stopSpin stops the probe-progress spinner ticker. The m handler
+	// restarts it too, symmetrically with stopDecor: without this, cycling
+	// from off to informative left no ticker running for the rest of the
+	// session (startTicker had already returned its no-op stop under off),
+	// and cycling to off left the previous ticker running forever.
+	stopSpin func()
 }
 
 // updateBanner re-renders the banner text from current state. Only the
