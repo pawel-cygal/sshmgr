@@ -2,10 +2,12 @@
 
 [![CI](https://github.com/systeampl/sshmgr/actions/workflows/ci.yml/badge.svg)](https://github.com/systeampl/sshmgr/actions/workflows/ci.yml)
 
-A modern SSH connection manager for the terminal — full CLI + TUI for
-DevOps and SRE workflows: jump hosts, Duo MFA, password vaults, port
-forwarding, file transfer, parallel fleet command execution, and Ansible
-integration — all from one config and one binary.
+A local-first SSH operations and access-management tool for the terminal.
+`sshmgr` combines a full CLI and TUI for daily connections with read-only
+fleet audits, SSH-key ownership review, controlled access changes and an
+optional connection to sshmgr Cloud. Jump hosts, Duo MFA, password vaults,
+file transfer, forwarding, fleet execution and Ansible continue to work from
+one config and one binary.
 
 ```
 ███████╗███████╗██╗  ██╗███╗   ███╗ ██████╗ ██████╗      /\___/\
@@ -15,6 +17,33 @@ integration — all from one config and one binary.
 ███████║███████║██║  ██║██║ ╚═╝ ██║╚██████╔╝██║  ██║
 ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═╝     modern SSH mgr
 ```
+
+## Current main: local-first with optional Cloud
+
+The next release line adds a complete SSH access lifecycle without turning the
+hosted service into a requirement:
+
+- **Local operations:** connect, transfer files, run commands, rotate keys and
+  use the TUI without an account or external service.
+- **Access audit:** inspect system accounts and `authorized_keys`, find shared
+  or unknown keys, map ownership and compare immutable scans.
+- **Controlled lifecycle:** invite, verify, approve, synchronize and revoke
+  access with an explicit plan and post-change scan.
+- **Optional Cloud connection:** authorize the CLI in a browser, push only an
+  explicitly approved evidence bundle and use organization/project workflows.
+
+The public repository contains the CLI/TUI and its versioned Cloud contract.
+The hosted API, database and WebPanel are maintained separately as a private
+SaaS service. The Cloud service never receives SSH private keys, passwords,
+agent sockets or usable host credentials.
+
+| Goal | Start here |
+|---|---|
+| Manage and connect to hosts locally | [`Quick start`](#quick-start) |
+| Audit who can access the fleet | [`SSH access audit`](#ssh-access-audit) |
+| Connect the CLI to a Cloud project | [`Optional Cloud connection`](#optional-cloud-connection) |
+| Invite, approve or revoke access | [`Cloud-connected SSH access lifecycle`](#cloud-connected-ssh-access-lifecycle-beta) |
+| Understand data and credential boundaries | [`Cloud client guide`](docs/cloud-client.md) |
 
 ## Why sshmgr
 
@@ -48,10 +77,21 @@ have:
 - **`sshmgr lint`** — finds broken/cyclic proxy paths, invalid ports and KVM
   endpoints, plaintext secrets, missing key files, undefined groups, malformed
   snippets and forward profiles before you hit them at runtime.
+- **Read-only SSH access audit** — inventories system accounts and effective
+  `authorized_keys`, detects shared/unknown keys and partial coverage, exports
+  HTML/CSV/JSON, and keeps immutable private scan history.
+- **Access lifecycle** — task-oriented `audit` and `access` commands guide an
+  operator through invitation, key-possession verification, approval,
+  preconditioned synchronization and revocation.
+- **Optional Cloud client** — browser-approved human login, separate runner
+  credentials in the OS keyring, organization/project profiles and explicit
+  evidence upload. No implicit background sync.
 - **Ansible integration** — `export ansible` turns the fleet into an
   inventory (resolving bastion chains and proxy hops for you); `playbook`
   runs `ansible-playbook` against any selector.
-- Single Go binary, no external services, no daemons.
+- Single Go binary and no daemon. Core connection, audit and report workflows
+  remain fully local; the hosted service is used only by explicit Cloud
+  commands.
 
 ## Install
 
@@ -99,6 +139,8 @@ server (XQuartz on macOS).
 
 ## Quick start
 
+### Manage connections locally
+
 1. Edit the config (auto-created on first run):
 
    ```bash
@@ -127,10 +169,58 @@ server (XQuartz on macOS).
    sshmgr ui
    ```
 
+4. Validate the resolved fleet configuration before wider operations:
+
+   ```bash
+   sshmgr lint
+   ```
+
+Everything above is local and works without a Cloud account.
+
+### SSH access audit
+
+Preview the selected hosts, then run the bounded read-only system audit:
+
+```bash
+sshmgr audit --group production --dry-run
+sshmgr audit --group production
+sshmgr audit show
+```
+
+Each completed audit is stored locally as an immutable mode-`0600` artifact.
+Nothing is uploaded unless `--push` or `sshmgr audit push` is explicit. After a
+second scan, `sshmgr audit diff` shows the semantic access change. Use
+`sshmgr ui` and press `u` for the same workflow in the TUI.
+
+### Optional Cloud connection
+
+Select a profile supplied for your organization/project and authorize the
+human CLI through the browser:
+
+```bash
+sshmgr cloud project use production
+sshmgr login
+sshmgr whoami
+sshmgr cloud status
+```
+
+Human and runner credentials use separate OS-keyring entries; bearer tokens
+are not written to the profile file. A normal audit remains local. To review
+the privacy preview and deliberately upload its redacted evidence:
+
+```bash
+sshmgr audit --group production --push
+```
+
+See the [Cloud client guide](docs/cloud-client.md) for runner setup, transport
+security and the precise trust boundary.
+
 ## CLI reference
 
 ```text
 sshmgr [-t] <alias> [cmd…]  shell, or run one command (-t forces a TTY)
+sshmgr connect <alias> [cmd…]
+                            explicit task-oriented connection form
 sshmgr <alias> :<snippet>   run a saved snippet by name
 sshmgr ui                   launch the TUI
 sshmgr list [--group G] [--tag T]
@@ -168,6 +258,27 @@ sshmgr watch [-n SECS] <alias> <cmd…>
 sshmgr rotate-key --new-key PATH [--group G | --tag T | --host a,b | --all]
                   [--remove-old] [--dry-run]
                             safely roll a new SSH key across a fleet
+sshmgr login [--profile NAME] [--no-browser]
+sshmgr logout [--profile NAME] [--local]
+sshmgr whoami [--profile NAME] [--json]
+                            authorize and inspect a human Cloud session
+sshmgr audit (--group G | --tag T | --host a,b | --all) [--push]
+sshmgr audit show / diff / push
+                            run and inspect immutable local access audits;
+                            network upload is always explicit
+sshmgr access invite EMAIL (--group G | --tag T | --host a,b)
+                     --account USER [--ttl 30d]
+sshmgr access status [EMAIL | INVITE_ID] [--json]
+sshmgr access approve INVITE_ID
+sshmgr access revoke EMAIL (--group G | --tag T | --host a,b)
+sshmgr access sync (--group G | --tag T | --host a,b | --all)
+                            manage verified desired access and converge hosts
+                            only after reviewing a preconditioned plan
+sshmgr cloud project show / list / use PROFILE
+sshmgr cloud status [--profile NAME] [--json]
+sshmgr cloud push scan.json [--profile NAME] [--yes]
+                            select Cloud context, verify service status and
+                            explicitly upload validated redacted evidence
 sshmgr access scan [selector] --out scan.json [--fail-on SEVERITY]
                             read-only authorized_keys audit; supports
                             exclusions, preflight, bounded parallelism
@@ -204,7 +315,7 @@ sshmgr version [--json]     print version, commit, build time and platform
 sshmgr history [transfers|forwards|logins]
                             show recent activity
 sshmgr completion <shell>   emit shell completion (bash | zsh | fish)
-sshmgr help                 show help
+sshmgr help [--all]         show short or complete help
 ```
 
 ### Shell completion
@@ -1162,7 +1273,7 @@ continues — step 2 is the small form for `--check` / `--diff` /
 `--extra-vars`. `Esc` on the form returns to the picker so you can pick
 a different playbook without leaving the manager flow.
 
-### Common SSH access workflow (experimental)
+### Cloud-connected SSH access lifecycle (beta)
 
 The default CLI and TUI present the access lifecycle as a short sequence of
 operator tasks. Low-level snapshot and bundle commands remain available under
@@ -2104,16 +2215,23 @@ tunnel, KEX, host-key check, or auth.
 
 ```
 internal/
+  access/         local SSH access scans, findings, ownership, diffs and reports
+  accessplan/     preconditioned desired-access plans and safe application
   ansible/        Ansible inventory export + ansible-playbook launcher
   banner/         ASCII banner shown at the top of the TUI
+  cloudclient/    authenticated project status and evidence upload client
+  cloudprofile/   local Cloud profiles without serialized bearer tokens
+  cloudstate/     validated local workspace evidence state
   completion/     bash / zsh / fish completion scripts + suggester
   config/         YAML schema, atomic save, ResolveHost (group merge)
   exec/           parallel command execution + drift detection + watch
   external/       system ssh / scp / sftp backend for external: true hosts
   fwd/            port forwarding (-L / -R / -D) + X11 channel handler
   importer/       host import from ssh_config / Ansible / etc-hosts
+  humanclient/    browser-approved human session and access-lifecycle client
   lint/           config validator (groups, refs, keys, snippets)
   logo/           SysTeam wolf rendered as half-block terminal cells
+  projectstate/   active project and immutable private audit history
   rotate/         safe fleet-wide SSH key rotation (append → verify → remove)
   secret/         password backends (env / keyring / cmd / prompt)
   snippets/       file-based snippet libraries + host/group/file merge
@@ -2123,7 +2241,8 @@ internal/
                   tokyonight / nord / rosepine / gruvbox) + ANSI helpers
   transfer/       SCP one-shot, SFTP REPL, file-transfer logger
   tui/            host list (flat + tree), 2-pane file manager,
-                  port-forward dialog, live ping
+                  port-forward dialog, live ping, access-audit launcher
+cloudcontract/    public versioned evidence and Cloud transport contract
 main.go           CLI dispatcher
 ```
 
@@ -2138,6 +2257,12 @@ main.go           CLI dispatcher
 - [x] Structured output — `exec --json`, `lint --json`, drift JSON.
 - [x] Fleet exec controls — `--timeout`, `--retry`, `--fail-fast`.
 - [x] Ansible integration — inventory export + `ansible-playbook` launcher.
+- [x] Bounded system SSH access audit with immutable local history, ownership
+  review, semantic diffs and HTML/CSV/JSON reports.
+- [x] Optional Cloud client with browser-approved human login, OS-keyring
+  credentials and explicit redacted evidence upload.
+- [x] Verified invitation, approval, synchronization and revocation lifecycle
+  with plan preconditions and a post-change scan.
 - [ ] Git-backed config sync across machines.
 - [ ] SSH certificate authentication (Vault SSH / step-ca / Teleport CA).
 - [x] TUI bulk-select (`Space` to toggle, `x` to run a command across the
