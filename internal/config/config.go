@@ -166,6 +166,10 @@ type HostConfig struct {
 	// keyboard-interactive fallback. Used by key-rotation verification so a
 	// new key is proven to work on its own merits.
 	KeyOnly bool `yaml:"-" json:"-"`
+	// BatchMode is runtime-only and prevents fleet/read-only operations from
+	// prompting for SSH passwords, keyboard-interactive challenges, Duo, or an
+	// unknown host key. It also prevents automatic known_hosts enrollment.
+	BatchMode bool `yaml:"-" json:"-"`
 	// Alias is the host's config key. Runtime-only (never serialized);
 	// ResolveHost fills it so downstream code — e.g. password_cmd
 	// placeholder expansion — can reference the host by its sshmgr name.

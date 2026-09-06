@@ -1,6 +1,9 @@
 /sshmgr
+/sshmgr-cloud
 *.bak.*
 
 # Local-only working files
 /.codex
-/docs/
+/docs/*
+!/docs/access-schema-v1.md
+!/docs/cloud-client.md

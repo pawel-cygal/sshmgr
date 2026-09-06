@@ -168,6 +168,31 @@ sshmgr watch [-n SECS] <alias> <cmd…>
 sshmgr rotate-key --new-key PATH [--group G | --tag T | --host a,b | --all]
                   [--remove-old] [--dry-run]
                             safely roll a new SSH key across a fleet
+sshmgr access scan [selector] --out scan.json [--fail-on SEVERITY]
+                            read-only authorized_keys audit; supports
+                            exclusions, preflight, bounded parallelism
+sshmgr access report scan.json [--html report.html] [--csv access.csv] [--fail-on SEVERITY]
+sshmgr access graph scan.json [--json graph.json]
+sshmgr access merge scan-a.json scan-b.json [...] --out fleet.json
+sshmgr access identity-map scan.json --out identities.yaml
+sshmgr access review scan.json --identities identities.yaml [--json/--html/--csv PATH] [--fail-on SEVERITY]
+sshmgr access offboarding ID --scan scan.json --review ownership.json [--json/--html/--csv PATH]
+sshmgr access offboarding-check --baseline offboarding.json --before-scan OLD --before-review OLD_REVIEW --after-scan NEW --after-review NEW_REVIEW [exports]
+sshmgr access diff before.json after.json
+sshmgr access who-has HOST --scan scan.json
+sshmgr access where-is-key SHA256:... --scan scan.json
+                            local reports, semantic diffs and access lookups
+sshmgr cloud offboarding-history-build HISTORY CHECK... --out OUT
+sshmgr cloud offboarding-history-inspect OUT
+                            bind read-only offboarding outcomes to a local
+                            workspace timeline; no network activity
+sshmgr cloud ownership-history-build HISTORY REVIEW... --out OUT
+sshmgr cloud ownership-history-inspect OUT
+                            bind privacy-normalized ownership reviews and
+                            identity/claim changes to a workspace timeline
+sshmgr cloud dashboard HISTORY [evidence] [--html OUT] [--csv OUT] [policy]
+                            render local HTML and/or spreadsheet-safe access
+                            review CSV from the same strict evidence joins
 sshmgr import (ssh-config [path] | ansible <inv> | hosts <file>) [--group G] [--only glob] [--dry-run]
                             import hosts from ssh_config / Ansible / etc-hosts
 sshmgr export ansible [--format yaml|ini] [selectors] [--out path]
@@ -470,6 +495,7 @@ config, so groups and inheritance work exactly as for native hosts:
 | `sshmgr sftp` | system `sftp` |
 | `sshmgr fwd -L/-R/-D` | system `ssh -N` |
 | `sshmgr exec` / `sshmgr watch` | system `ssh` (per host; `BatchMode` is forced, so key auth) |
+| `sshmgr access scan` | system `ssh`, fixed read-only collectors, no prompts or host-key enrollment |
 | `sshmgr files` (2-pane manager) | **not supported** — needs the native backend; use `sshmgr sftp` |
 | `sshmgr rotate-key` | **not supported** — native backend only |
 
@@ -1135,6 +1161,494 @@ playbook list — `/` focuses the filter, `↑`/`↓` drive the list, `Enter`
 continues — step 2 is the small form for `--check` / `--diff` /
 `--extra-vars`. `Esc` on the form returns to the picker so you can pick
 a different playbook without leaving the manager flow.
+
+### Common SSH access workflow (experimental)
+
+The default CLI and TUI present the access lifecycle as a short sequence of
+operator tasks. Low-level snapshot and bundle commands remain available under
+`help --all`, but they are not required for the common flow:
+
+```bash
+# Select an organization/project profile, then authorize this human CLI in the browser.
+sshmgr cloud project use production
+sshmgr login
+
+# Run the safe default system audit. The immutable result is stored privately.
+sshmgr audit --group production
+sshmgr audit show
+sshmgr audit diff
+
+# Invite a person. sshmgr prints one possession-verification SSH command.
+sshmgr access invite contractor@example.com \
+  --group production --account deploy --ttl 7d
+
+# After the invitee runs that command, review and converge desired access.
+sshmgr access status contractor@example.com
+sshmgr access approve INVITE_ID
+sshmgr access sync --group production
+
+# Revocation changes desired state first; sync shows and confirms the host diff.
+sshmgr access revoke contractor@example.com --group production
+sshmgr access sync --group production
+```
+
+`sshmgr audit` defaults to bounded system scope, `sudo -n`, local OS accounts,
+fingerprints only, and private per-project state. It never uploads unless
+`--push` or `audit push` is explicit. `access sync` always refreshes that
+read-only baseline, prints an immutable preconditioned plan, requires the plan
+ID interactively, applies through the customer-controlled SSH runner, and
+performs a post-scan.
+
+Human sessions use browser-approved device codes and are stored in the OS
+keyring separately from project runner tokens. Access invitations prove
+possession through a shell-less SSH endpoint; that proof does not itself grant
+host access. For a local verification listener on a nonstandard port, set for
+example `SSHMGR_VERIFY_HOST=127.0.0.1:2222` before creating the invitation.
+
+Automation holding the same short-lived invitation token can read a
+privacy-minimal result without a browser session. Send the token only in the
+Authorization header, never in the URL:
+
+```bash
+curl --fail --silent \
+  -H "Authorization: Bearer $SSHMGR_VERIFICATION_TOKEN" \
+  https://cloud.example/v2/verification/result
+```
+
+The response contains state, timestamps, attempt counts, and normalized
+fingerprints. It omits the identity, tenant, targets, and public-key material.
+
+The hosted API and WebPanel are maintained as a separate private SaaS service.
+This public repository contains only the operator-controlled CLI/TUI, its
+versioned wire/evidence contract, and local SSH operations. See the
+[Cloud client guide](docs/cloud-client.md) for connection, credential and trust
+boundaries.
+
+### Advanced SSH access audit API (experimental)
+
+The `access` namespace is the local, read-only foundation for sshmgr Cloud.
+The scanner uses the configured backend: native hosts go through sshmgr's Go
+SSH connection chain, while `external: true` hosts use the system OpenSSH
+client (including `ProxyCommand`, `Match`, and other OpenSSH-only transport).
+A current-account scan inspects that account's default OpenSSH key files. A
+separate system preflight can use non-interactive `sudo -n` to discover host
+capabilities, enumerate bounded OS account metadata, and expand each account's
+effective OpenSSH authentication sources without statting or reading its
+authorized-key files. Neither mode modifies remote files, uploads a snapshot,
+or stores private keys.
+
+Start by resolving the exact scope without connecting:
+
+```bash
+sshmgr access scan --group pilot --exclude-host protected-host --dry-run
+```
+
+Then run a metadata-only preflight before reading key entries:
+
+```bash
+sshmgr access scan --group pilot --exclude-host protected-host \
+  --preflight -p 2 --timeout 15s --out preflight.json
+```
+
+On a host where the connected account has non-interactive sudo, discover the
+system account source and effective `sshd` configuration without reading
+authorized-key contents:
+
+```bash
+sshmgr access scan --host pilot-host --exclude-host protected-host \
+  --sudo --preflight --timeout 15s --out system-preflight.json
+```
+
+The system preflight validates `sshd_config` and records
+`AuthorizedKeysFile`, `AuthorizedKeysCommand`, `TrustedUserCAKeys`, and
+authorized-principals sources. It safely expands `%h`, `%u`, `%U`, and `%%`
+per effective account configuration. Account
+discovery is source-aware rather than using one hard product limit:
+
+```bash
+# Default: local /etc/passwd only; 4096-account safety budget.
+sshmgr access scan --host pilot-host --sudo --preflight
+
+# Explicit opt-in to NSS/SSSD/LDAP enumeration; default budget 1000.
+sshmgr access scan --host pilot-host --sudo --preflight --accounts nss
+
+# Keyed lookup works even where directory-wide enumeration is disabled.
+sshmgr access scan --host pilot-host --sudo --preflight \
+  --accounts explicit --account root,deploy,user@example.com
+
+# Override the per-host work budget (hard safety maximum: 10000).
+sshmgr access scan --host pilot-host --sudo --preflight \
+  --accounts nss --max-accounts 2000
+```
+
+Any exhausted budget is recorded as `accounts_truncated` and keeps coverage
+partial. Local mode explicitly reports that directory-only accounts were not
+enumerated; NSS mode reports that completeness depends on the configured
+identity provider. The preflight remains `partial` by design: key-file
+metadata and contents are deliberately untouched in this mode.
+
+After reviewing preflight coverage, inspect the selected accounts' static
+`AuthorizedKeysFile` sources through the same root or `sudo -n` channel:
+
+```bash
+sshmgr access scan --host pilot-host --sudo \
+  --accounts explicit --account root,deploy \
+  --max-source-mib 4 --max-total-mib 16 \
+  --out system-scan.json
+```
+
+System collection is bounded twice: the default is 4 MiB per source and
+16 MiB in total per host. Explicit overrides are capped at 16 MiB and 64 MiB
+respectively. Reaching a budget leaves visible source errors and partial
+coverage. The collector records file and parent-directory mode/UID/GID,
+refuses symlinked sources or any path with a symlinked ancestor, and never
+executes `AuthorizedKeysCommand`.
+
+Create a local fingerprint-only snapshot and report:
+
+```bash
+sshmgr access scan --group pilot --exclude-host protected-host --out scan.json
+sshmgr access merge region-a.json region-b.json --out fleet.json
+sshmgr access report fleet.json --html report.html --csv access.csv
+# Optional CI gate: exits 2 after writing the complete report when high or
+# critical findings exist. Existing behavior is unchanged without --fail-on.
+sshmgr access report fleet.json --html gated-report.html --fail-on high
+sshmgr access graph fleet.json --json graph.json
+sshmgr access identity-map fleet.json --out identities.yaml
+# Edit identities.yaml: add people/services and explicit claims.
+sshmgr access review fleet.json --identities identities.yaml \
+  --json ownership.json --html ownership.html --csv ownership.csv
+# Ownership findings use the same inclusive threshold policy.
+sshmgr access review fleet.json --identities identities.yaml --fail-on medium
+sshmgr access offboarding pawel@example.com --scan fleet.json \
+  --review ownership.json --json offboarding.json \
+  --html offboarding.html --csv offboarding.csv
+# After a new scan and ownership review, verify the observed outcome locally.
+sshmgr access offboarding-check --baseline offboarding.json \
+  --before-scan fleet.json --before-review ownership.json \
+  --after-scan fleet-after.json --after-review ownership-after.json \
+  --json offboarding-check.json --html offboarding-check.html
+sshmgr access where-is-key SHA256:abc... --scan scan.json
+sshmgr access who-has web-01 --scan scan.json
+sshmgr access diff previous.json scan.json
+
+# Build and inspect local Cloud evidence. These preparation steps use no network.
+sshmgr cloud upload-plan fleet.json --workspace client-a --out upload-plan.json
+sshmgr cloud inspect upload-plan.json
+sshmgr cloud history-build upload-plan-old.json upload-plan-new.json \
+  --out workspace-history.json
+sshmgr cloud history-inspect workspace-history.json
+sshmgr cloud ownership-history-build workspace-history.json \
+  ownership-old.json ownership-new.json \
+  --out workspace-ownership-history.json
+sshmgr cloud ownership-history-inspect workspace-ownership-history.json
+sshmgr cloud offboarding-history-build workspace-history.json \
+  offboarding-check.json --out workspace-offboarding-history.json
+sshmgr cloud offboarding-history-inspect workspace-offboarding-history.json
+sshmgr cloud bundle-build workspace-history.json \
+  --ownership-review ownership.json \
+  --ownership-history workspace-ownership-history.json \
+  --offboarding-history workspace-offboarding-history.json \
+  --out workspace-bundle.json
+sshmgr cloud bundle-inspect workspace-bundle.json
+# Verify and store a named Cloud profile. The token is written only to the OS
+# keyring; cloud.json stores the endpoint, workspace, and keyring reference.
+printf '%s\n' "$SSHMGR_NEW_CLOUD_TOKEN" | sshmgr cloud login production \
+  --endpoint https://cloud.example.com --workspace client-a --token-stdin
+sshmgr cloud status --profile production
+sshmgr cloud workspace list
+sshmgr cloud workspace use production
+# Explicit network action: upload exactly one validated bundle through the
+# selected profile. The bundle workspace must match the profile workspace.
+sshmgr cloud upload workspace-bundle.json --profile production
+sshmgr cloud dashboard workspace-history.json \
+  --ownership-review ownership.json \
+  --ownership-history workspace-ownership-history.json \
+  --offboarding-history workspace-offboarding-history.json \
+  --html dashboard.html --csv access-review.csv
+# Optional complete-review gate for CI or a scheduled local audit.
+sshmgr cloud dashboard workspace-history.json \
+  --ownership-history workspace-ownership-history.json \
+  --offboarding-history workspace-offboarding-history.json \
+  --csv access-review.csv --fail-on high --require-full \
+  --require-current-ownership --require-complete-offboarding
+```
+
+The same read-only workflow is available from the main TUI. Press `u` to
+open **Access Audit**. A scan targets the current multi-selection first, then
+the group node under the cursor, or the highlighted host. The menu exposes:
+
+- current-account and system-account key scans;
+- current-account and system-account preflight;
+- target-only dry-run;
+- snapshot report with optional HTML/CSV, and semantic diff;
+- access graph with optional normalized JSON;
+- deterministic merge of disjoint snapshots into a fleet baseline;
+- local identity-map template, ownership review, and identity-scoped
+  read-only offboarding report plus post-scan outcome check;
+- offline Cloud upload-plan, workspace-history, ownership-history,
+  offboarding-history, and deterministic ingestion-bundle
+  creation/inspection, named Cloud profile login/status/workspace management,
+  an explicit authenticated bundle uploader, plus a self-contained local HTML
+  dashboard and complete workspace policy gate;
+- `who-has` and `where-is-key` lookups.
+
+The scan, report, and ownership-review forms map directly to the CLI flags,
+including the opt-in `--fail-on` severity policy. Thresholds are inclusive:
+`high` matches high and critical findings, while `info` matches every finding.
+A match writes every requested private artifact first and then exits with code
+`2`; invalid policy input exits `1`, and the default remains disabled. Scan
+forms also expose parallelism, timeout, host/tag exclusions, `--require-full`,
+explicit public-key inclusion, and the system account source/budget. System
+preflight defaults to `sudo -n`, local
+`/etc/passwd` enumeration, and the documented per-mode account budget. The TUI
+exits and re-execs the matching `sshmgr access ...` or `sshmgr cloud ...`
+command, just like its exec, playbook, and port-forward launchers, so CLI and
+TUI use the same scanner, artifact builders, and validation paths.
+
+The TUI also exposes a Cloud profile submenu and the explicit Cloud upload
+action. Login and status require separate network confirmations; local
+workspace show/list/use/set do not connect anywhere. The upload form supports
+the active or a named profile plus the same manual HTTPS/keyring/CI fallback as
+the CLI. Preparation, inspection, dashboard, profile selection, and policy
+commands remain offline; only login, status, and upload contact the API.
+
+Named profile metadata is stored in mode-`0600`
+`$SSHMGR_CLOUD_CONFIG`, then `$XDG_CONFIG_HOME/sshmgr/cloud.json`, or the
+platform user config directory. Bearer tokens are never serialized there:
+`cloud login --token-stdin` and `--token-env` store them under a generated OS
+keyring entry, while `--token-keyring` references an existing entry. A login
+is saved only after the authenticated workspace status request succeeds.
+
+`access merge` is local and read-only. It accepts two or more schema-v1
+snapshots with compatible scope and disjoint host aliases, preserves their
+source scan IDs, and recomputes fleet-wide summaries and findings. Input order
+does not affect the output. Repeated observations of the same host are rejected
+instead of being silently overwritten; compare those snapshots with
+`access diff` first. In the TUI, choose **merge snapshots** and provide the
+comma-separated input paths plus the output path.
+
+`access identity-map` creates a local YAML template containing every observed
+fingerprint with an empty `claims` list. It deliberately does not convert
+`authorized_keys` comments into owners. Add identities and claims explicitly:
+
+```yaml
+schema_version: "1"
+identities:
+  - id: pawel@example.com
+    display_name: Pawel
+    kind: human                 # human | service
+    status: active             # active | offboarded
+keys:
+  - fingerprint: SHA256:abc...
+    claims:
+      - identity: pawel@example.com
+        status: claimed_by_identity  # or possession_verified with verified_at
+        source: manual
+```
+
+`access review` combines this explicit map with a validated snapshot and
+reports `unknown_key`, `shared_key`, and `offboarded_identity_access`. A
+possession claim is distinct from a comment and requires an RFC3339
+`verified_at` timestamp. JSON, self-contained HTML, and spreadsheet-safe CSV
+exports are deterministic and local; all are written with mode `0600`. Review
+JSON embeds the normalized identities and map membership, so its validator can
+reconstruct the identity map, verify the recorded digest, and reject tampered
+claims, counters, evidence, or findings.
+
+`access offboarding` joins one validated snapshot to its exact validated
+ownership review and selects one identity already present in that review. It
+exports deterministic JSON, self-contained HTML, spreadsheet-safe CSV, and a
+terminal summary containing the identity's claimed fingerprints and exact
+observed `key -> OS account -> host -> source:line` evidence. Shared claims,
+offboarded access, unverified claims, incomplete coverage, and dynamic or
+certificate-backed sources remain explicit warnings. The artifact records
+`mode: report_only`, `remote_changes: false`, `executable: false`, and
+`source_digests_included: false`; it is evidence, not a removal plan. It never
+opens SSH or a network connection, and every export is mode `0600`. A future
+remediation command must perform a fresh scan and bind exact source-file
+digests before proposing any change.
+
+`access offboarding-check` compares that baseline report with a distinct,
+newer snapshot and its exact ownership review. Its result is deliberately
+three-state: `still_present` when a mapped key still has any observed access
+edge, `complete` only when the scope is comparable, every host has full safe
+coverage, ownership claims are unchanged, the identity remains offboarded,
+there are no dynamic/CA sources, and all baseline edges are absent, otherwise
+`inconclusive`. Missing hosts, partial/failed collection, malformed/unread
+sources, account-enumeration changes, reused scan IDs, changed claims, or
+dynamic authentication can therefore never become false proof of removal.
+The deterministic JSON/HTML/CSV outputs are local, mode `0600`, and perform no
+SSH or remediation.
+
+`cloud upload-plan` is the local transport-boundary preview, not a network
+uploader. It validates one snapshot, clones it without mutating the source,
+always removes raw public-key text, removes unverified `authorized_keys`
+comments by default, and writes a deterministic mode-`0600` JSON envelope. The
+envelope records the future workspace slug, an idempotency key derived from the
+workspace and `scan_id`, a payload SHA256 digest, byte count, and counts of
+aliases, accounts, paths, commands, authorized-key options, diagnostic texts,
+comments, fingerprints, and findings that would leave the workstation.
+`--include-identity-hints` is required to retain comments. `cloud inspect`
+validates the complete envelope and prints the same preview locally. Neither
+preparation command performs DNS, HTTPS, SSH, login, token, or keyring
+activity. `sshmgr cloud upload` is the separate, explicit authenticated network
+operation.
+
+`cloud history-build` is an offline model of immutable Cloud ingestion. It
+accepts one or more validated upload plans for exactly one workspace, orders
+them chronologically, deduplicates byte-equivalent retries by `scan_id`, and
+rejects reuse of an ID with a different payload or privacy envelope. There is
+no arbitrary scan-count limit; the private artifact is bounded to 256 MiB.
+Transitions calculate semantic access changes only when host sets and scan
+policies match; current-account scans must also use the same SSH user.
+Different scopes are labelled not comparable, and hosts with
+failed or incomplete key collection are excluded from added/removed access
+edges so an observation gap cannot masquerade as revoked access. Partial
+coverage is always displayed as a caveat. `cloud history-inspect` strictly
+revalidates the embedded plans,
+derived index and transitions. Both commands are local-only and available from
+the Access Audit TUI.
+
+`cloud offboarding-history-build` creates a separate strict companion to the
+frozen workspace-history v1 schema. It binds one or more validated
+`offboarding-check` artifacts to scan IDs that already exist in exactly one
+workspace timeline. Input order is normalized, exact check retries are
+deduplicated, and conflicting checks for one identity/after-scan pair are
+rejected. The derived latest row for each identity is `current` only when its
+after scan equals the workspace's latest scan. Older `complete` outcomes are
+explicitly `STALE` and are not counted as current completion. The builder and
+`cloud offboarding-history-inspect` are local-only, strict, deterministic, and
+write private mode-`0600` JSON without raw public keys or credentials.
+
+`cloud ownership-history-build` creates another strict companion to the
+frozen workspace-history v1 schema. Each standalone ownership review must
+reconcile with a scan in exactly that workspace. Inputs are ordered by the
+workspace timeline, exact retries are deduplicated, and two different reviews
+for one scan are rejected. The artifact derives the latest reviewed scan,
+reviewed/missing coverage, and deterministic identity lifecycle, ownership
+claim, and reviewed-key state changes. A latest review for an older scan is
+explicitly `STALE`. Unverified `authorized_keys` comments are removed even if
+they existed in the standalone review; only the original review SHA-256 is
+retained to support strict audit joins. The build and inspect commands are
+local-only and write mode-`0600` JSON.
+
+`cloud dashboard` validates a workspace-history artifact and renders its
+latest snapshot into the planned **Overview**, **Findings**, and **Access
+Graph** views. The complete validated history drives the **Timeline** view.
+Current-state cards and graph edges never mix observations from older scans.
+An optional `--ownership-review review.json` adds the explicit
+`Identity → key → OS account → host` path, ownership counters, and read-only
+offboarding evidence. The review must be internally valid, carry the latest
+`scan_id`, and fully reconcile with that latest snapshot; an older or otherwise
+mismatched review is rejected. The join intentionally ignores differences in
+`authorized_keys` comments because upload privacy may redact these unverified
+hints, but it does not ignore host/account/fingerprint/access evidence, claims,
+identity lifecycle, verification state, or findings.
+An optional `--offboarding-history` adds current/stale outcome counters,
+identity-level results, blocking reasons, and per-scan events to the timeline.
+The companion must match the exact workspace/history ID and scan index. When a
+current check and an ownership review are attached together, their review ID
+and canonical review digest must match; inconsistent evidence is rejected.
+The dashboard never promotes a stale or `inconclusive` result to `complete`.
+An optional `--ownership-history` adds ownership-review coverage, current or
+stale freshness, identity/claim/key-state changes, and review events on the
+workspace timeline. If the current review is also attached, it must match the
+history's normalized review and original digest. When both ownership and
+offboarding histories are present, every check's before/after review ID and
+SHA-256 must match the corresponding ownership-history scan; gaps or mixed
+evidence are rejected.
+The HTML is deterministic, self-contained, and written mode `0600`; it contains
+inline CSS but no JavaScript, external assets, remote resource references, or
+network client.
+The same command accepts `--csv access-review.csv`; either HTML, CSV, or both
+may be requested. CSV uses the exact same validated evidence joins and one
+stable typed-row header for workspace summary, host coverage, scan and
+ownership findings, current access edges, access/coverage changes, ownership
+review coverage and transitions, and offboarding outcomes/evidence. Rows are
+canonical and byte-deterministic, every cell is protected from spreadsheet
+formula injection, and the private mode-`0600` export cannot restore comments
+or raw key material removed at the privacy boundary.
+The dashboard also accepts the opt-in local policy flags `--fail-on`,
+`--require-full`, `--require-current-ownership`, and
+`--require-complete-offboarding`. They evaluate the exact same joined evidence
+used by HTML/CSV. Missing required companion evidence is a policy violation,
+not a clean result. Requested outputs are written first and a violation then
+returns status `2`; malformed/mismatched evidence still returns status `1`.
+All observed strings are HTML-escaped. Identity hints appear only if every
+input upload plan used the explicit `--include-identity-hints` privacy choice,
+and remain labelled unverified. The dashboard is a local projection, not a new
+transport or storage schema and does not implement a hosted service.
+
+Snapshots, HTML/CSV reports, and graph JSON are written atomically with mode
+`0600`. Public-key
+material is excluded by default; `--include-public-keys` must be explicit.
+The scanner never accepts an empty fleet selector, and exclusions are applied
+before any connection is opened. Batch mode refuses password/MFA prompts and
+unknown host keys, so fleet scans cannot unexpectedly enroll a host key or
+wait for interactive input. For the external backend the scanner additionally
+pins no TTY, stdin protocol input, no local command, no forwarded connections,
+and no host-key updates. Conflicting `ssh_options` are ignored only for the
+scan process; the stored host configuration is not changed.
+
+CSV contains one deterministic row per observed or malformed
+`authorized_keys` entry, including host coverage, account, source, fingerprint,
+algorithm, comment, and an explicit identity status. Formula-like untrusted
+fields are prefixed for spreadsheet safety. The graph uses four node types:
+`identity_hint`, `key`, `account`, and `host`. Comments are always emitted as
+`unverified_comment`; the graph never promotes them to verified owners.
+The frozen v1 compatibility and privacy contract is documented in
+[`docs/access-schema-v1.md`](docs/access-schema-v1.md); snapshot and graph
+readers validate all semantic counters and references before producing output.
+
+Every successful current-account scan is marked `partial`: it has not
+enumerated other OS accounts or every effective authentication source. The
+system preflight closes the capability/configuration discovery gap without
+reading key files. A system scan additionally inspects bounded static sources
+and reports unsafe modes, unexpected ownership, symlinks, malformed entries,
+and read-budget gaps. Dynamic command/CA sources and connection-dependent
+`Match` behavior remain explicit coverage boundaries. Comments are treated as
+identity hints only—conflicting comments are worth investigating but are not
+proof that a key is shared. All remediation remains deliberately unimplemented.
+
+Build the experimental branch as a separate binary so the released `sshmgr`
+installation remains untouched, then run the isolated OpenSSH E2E suite:
+
+```bash
+go build -buildvcs=false -trimpath -o sshmgr-cloud .
+SSHMGR_CLOUD_BIN="$PWD/sshmgr-cloud" ./integration/access/test.sh
+```
+
+The E2E test uses a temporary Docker container and temporary SSH keys. It
+checks dry-run/exclusions, current and `sudo -n` system preflight, bounded
+system collection, native/external normalized-schema parity through a real
+OpenSSH `ProxyCommand`, explicit sudo denial, read-only files, snapshot
+redaction and permissions, ownership/mode findings, HTML/CSV reporting,
+normalized access-graph export, deterministic disjoint-snapshot merge, input
+overwrite protection, explicit identity ownership review, unknown/shared/
+offboarded findings, deterministic offline Cloud upload planning, strict
+transport-envelope privacy/integrity checks, deterministic offline workspace
+history and safe transition calculation, lookups, semantic diff, and rejection
+of an unknown host key.
+Existing product regressions remain covered by `integration/openssh/test.sh`
+and `integration/rotate/test.sh`.
+
+External current-account collection inspects both fixed sources in one
+OpenSSH session. Connection failures are reduced to safe categories such as
+host-key verification, authentication, DNS, timeout, refused, reset, or bad
+OpenSSH configuration; raw remote stderr is never copied into a snapshot.
+
+Run the separate Rocky Linux 9 fixture to cover the RHEL-compatible layout:
+
+```bash
+SSHMGR_CLOUD_BIN="$PWD/sshmgr-cloud" ./integration/access-rhel/test.sh
+```
+
+That fixture covers custom and missing `AuthorizedKeysFile` sources, multiple
+accounts, unsafe modes, a refused symlink, `AuthorizedKeysCommand`,
+`TrustedUserCAKeys`, principals sources, sudo denial, and normalized parity
+between native and external backends. Both integration suites hash mounted
+key files before and after collection to prove the tested paths are read-only.
 
 ### SSH key rotation
 

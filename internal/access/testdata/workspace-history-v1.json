@@ -1,0 +1,191 @@
+{
+  "schema_version": "1",
+  "history_id": "history_576f996f96c1507138dba9ac",
+  "workspace": "golden-workspace",
+  "latest_scan_id": "scan_golden_v1",
+  "artifacts": [
+    {
+      "scan_id": "scan_golden_v1",
+      "plan_id": "plan_c81f649604715118761e3df0",
+      "completed_at": "2026-08-11T12:00:01Z",
+      "payload_sha256": "SHA256:c4f139b50759083f72abb9140c835a59f2781fb9f88285ee250e7de3d3223cfb",
+      "payload_bytes": 1414,
+      "privacy": {
+        "profile": "standard",
+        "host_aliases_included": true,
+        "account_names_included": true,
+        "source_paths_included": true,
+        "identity_hints_included": false,
+        "public_keys_included": false,
+        "credentials_included": false
+      },
+      "preview": {
+        "hosts": 1,
+        "accounts": 1,
+        "access_entries": 1,
+        "unique_fingerprints": 1,
+        "findings": 1,
+        "selector_values": 1,
+        "host_alias_references": 4,
+        "group_name_references": 1,
+        "tag_name_references": 0,
+        "account_name_references": 1,
+        "fingerprint_references": 1,
+        "filesystem_paths": 2,
+        "configured_commands": 0,
+        "network_match_values": 0,
+        "authorized_key_options": 0,
+        "identity_hints": 0,
+        "diagnostic_texts": 5,
+        "raw_public_keys": 0
+      },
+      "snapshot_summary": {
+        "hosts_requested": 1,
+        "hosts_full": 0,
+        "hosts_partial": 1,
+        "hosts_failed": 0,
+        "accounts_observed": 1,
+        "key_sources_found": 1,
+        "authorized_key_entries": 1,
+        "malformed_entries": 0,
+        "key_bytes_inspected": 80,
+        "unique_fingerprints": 1,
+        "findings_total": 1,
+        "findings_critical": 0,
+        "findings_high": 0,
+        "findings_medium": 0,
+        "findings_low": 0,
+        "findings_info": 1
+      }
+    }
+  ],
+  "plans": [
+    {
+      "schema_version": "1",
+      "plan_id": "plan_c81f649604715118761e3df0",
+      "workspace": "golden-workspace",
+      "artifact_type": "access_snapshot",
+      "artifact_id": "scan_golden_v1",
+      "idempotency_key": "upload_ac6c3884d7cd8c6a0fbc4142",
+      "payload_sha256": "SHA256:c4f139b50759083f72abb9140c835a59f2781fb9f88285ee250e7de3d3223cfb",
+      "payload_bytes": 1414,
+      "privacy": {
+        "profile": "standard",
+        "host_aliases_included": true,
+        "account_names_included": true,
+        "source_paths_included": true,
+        "identity_hints_included": false,
+        "public_keys_included": false,
+        "credentials_included": false
+      },
+      "preview": {
+        "hosts": 1,
+        "accounts": 1,
+        "access_entries": 1,
+        "unique_fingerprints": 1,
+        "findings": 1,
+        "selector_values": 1,
+        "host_alias_references": 4,
+        "group_name_references": 1,
+        "tag_name_references": 0,
+        "account_name_references": 1,
+        "fingerprint_references": 1,
+        "filesystem_paths": 2,
+        "configured_commands": 0,
+        "network_match_values": 0,
+        "authorized_key_options": 0,
+        "identity_hints": 0,
+        "diagnostic_texts": 5,
+        "raw_public_keys": 0
+      },
+      "snapshot": {
+        "schema_version": "1",
+        "scan_id": "scan_golden_v1",
+        "scanner_version": "test",
+        "started_at": "2026-08-11T12:00:00Z",
+        "completed_at": "2026-08-11T12:00:01Z",
+        "scope": {
+          "mode": "current",
+          "selector": "group:pilot",
+          "requested_hosts": 1,
+          "host_exclusions": [
+            "protected-host"
+          ],
+          "excluded_matched_hosts": [
+            "protected-host"
+          ],
+          "include_public_keys": false
+        },
+        "summary": {
+          "hosts_requested": 1,
+          "hosts_full": 0,
+          "hosts_partial": 1,
+          "hosts_failed": 0,
+          "accounts_observed": 1,
+          "key_sources_found": 1,
+          "authorized_key_entries": 1,
+          "malformed_entries": 0,
+          "key_bytes_inspected": 80,
+          "unique_fingerprints": 1,
+          "findings_total": 1,
+          "findings_critical": 0,
+          "findings_high": 0,
+          "findings_medium": 0,
+          "findings_low": 0,
+          "findings_info": 1
+        },
+        "findings": [
+          {
+            "rule_id": "partial_scan",
+            "rule_version": "1",
+            "severity": "info",
+            "title": "SSH access coverage is partial",
+            "host": "web-01",
+            "evidence": [
+              "fixture limitation"
+            ],
+            "coverage_caveat": "Unobserved SSH access sources may still grant access.",
+            "recommended_action": "Review coverage limitations before using this scan for an access decision."
+          }
+        ],
+        "hosts": [
+          {
+            "alias": "web-01",
+            "groups": [
+              "pilot"
+            ],
+            "coverage": "partial",
+            "limitations": [
+              "fixture limitation"
+            ],
+            "accounts": [
+              {
+                "username": "deploy",
+                "home": "/home/deploy",
+                "sources": [
+                  {
+                    "type": "authorized_keys_file",
+                    "path": ".ssh/authorized_keys",
+                    "exists": true,
+                    "content_inspected": true,
+                    "mode": "0600",
+                    "size": 80,
+                    "entries": [
+                      {
+                        "line": 1,
+                        "fingerprint": "SHA256:golden",
+                        "algorithm": "ssh-ed25519",
+                        "bits": 256
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "duration_ms": 25
+          }
+        ]
+      }
+    }
+  ]
+}

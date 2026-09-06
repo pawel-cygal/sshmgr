@@ -1,0 +1,300 @@
+{
+  "schema_version": "1",
+  "ownership_history_id": "ownership_history_0adf85be63ae7503e73d1f95",
+  "workspace": "client-a",
+  "workspace_history_id": "history_74723e0a9bb2021a06cc3063",
+  "latest_scan_id": "scan_two",
+  "scans": [
+    {
+      "scan_id": "scan_one",
+      "completed_at": "2026-08-11T12:00:01Z",
+      "reviewed": true,
+      "review_id": "review_22e3d6a0b566dc118231db4e",
+      "review_sha256": "SHA256:319935487fddc571a88e37f9e0bb063e6ea6f33731dcd30a4a8485b9248532bf"
+    },
+    {
+      "scan_id": "scan_two",
+      "completed_at": "2026-08-12T12:00:01Z",
+      "reviewed": true,
+      "review_id": "review_7bc73445dd3e335e58b2810e",
+      "review_sha256": "SHA256:d90e86a2f71a96535d1aaf1d1bc76b5feafa3ef642c7458cea0af16c3f10f5bc"
+    }
+  ],
+  "summary": {
+    "scans": 2,
+    "reviewed_scans": 2,
+    "missing_scans": 0,
+    "current_review": true
+  },
+  "latest": {
+    "review_id": "review_7bc73445dd3e335e58b2810e",
+    "review_sha256": "SHA256:d90e86a2f71a96535d1aaf1d1bc76b5feafa3ef642c7458cea0af16c3f10f5bc",
+    "scan_id": "scan_two",
+    "completed_at": "2026-08-12T12:00:01Z",
+    "current": true,
+    "identity_map_digest": "SHA256:777be1e670731f683309e760fff40dd8901295eae9880564fd2530bc896d6014",
+    "summary": {
+      "observed_keys": 1,
+      "owned_keys": 1,
+      "unknown_keys": 0,
+      "shared_keys": 0,
+      "offboarded_access_keys": 1,
+      "possession_verified_keys": 1,
+      "mapped_keys_not_observed": 0,
+      "active_identities": 0,
+      "offboarded_identities": 1,
+      "findings_total": 1,
+      "findings_critical": 0,
+      "findings_high": 1,
+      "findings_medium": 0,
+      "findings_low": 0,
+      "findings_info": 0
+    }
+  },
+  "reviews": [
+    {
+      "schema_version": "1",
+      "review_id": "review_22e3d6a0b566dc118231db4e",
+      "scan_id": "scan_one",
+      "identity_map_digest": "SHA256:e9016d68808574f9dcf80f7bcea717225f1e9e75ee1ddbec619e2e8cccf0e6bb",
+      "summary": {
+        "observed_keys": 1,
+        "owned_keys": 1,
+        "unknown_keys": 0,
+        "shared_keys": 0,
+        "offboarded_access_keys": 0,
+        "possession_verified_keys": 0,
+        "mapped_keys_not_observed": 0,
+        "active_identities": 1,
+        "offboarded_identities": 0,
+        "findings_total": 0,
+        "findings_critical": 0,
+        "findings_high": 0,
+        "findings_medium": 0,
+        "findings_low": 0,
+        "findings_info": 0
+      },
+      "identities": [
+        {
+          "id": "alice@example.com",
+          "display_name": "Alice",
+          "kind": "human",
+          "status": "active"
+        }
+      ],
+      "keys": [
+        {
+          "fingerprint": "SHA256:4wyvq4+C9zfYxQLEtmV/iKvlJKIp7+g6ICK+2Qo2OzE",
+          "observed": true,
+          "identity_map_entry": true,
+          "ownership_status": "owned",
+          "offboarded_access": false,
+          "possession_verified": false,
+          "algorithm": "ssh-ed25519",
+          "occurrences": 1,
+          "hosts": [
+            "web-01"
+          ],
+          "accounts": [
+            "deploy@web-01"
+          ],
+          "claims": [
+            {
+              "identity": "alice@example.com",
+              "display_name": "Alice",
+              "kind": "human",
+              "identity_status": "active",
+              "verification": "claimed_by_identity",
+              "source": "manual",
+              "recorded_at": "2026-08-11T13:00:00Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schema_version": "1",
+      "review_id": "review_7bc73445dd3e335e58b2810e",
+      "scan_id": "scan_two",
+      "identity_map_digest": "SHA256:777be1e670731f683309e760fff40dd8901295eae9880564fd2530bc896d6014",
+      "summary": {
+        "observed_keys": 1,
+        "owned_keys": 1,
+        "unknown_keys": 0,
+        "shared_keys": 0,
+        "offboarded_access_keys": 1,
+        "possession_verified_keys": 1,
+        "mapped_keys_not_observed": 0,
+        "active_identities": 0,
+        "offboarded_identities": 1,
+        "findings_total": 1,
+        "findings_critical": 0,
+        "findings_high": 1,
+        "findings_medium": 0,
+        "findings_low": 0,
+        "findings_info": 0
+      },
+      "identities": [
+        {
+          "id": "alice@example.com",
+          "display_name": "Alice",
+          "kind": "human",
+          "status": "offboarded"
+        }
+      ],
+      "keys": [
+        {
+          "fingerprint": "SHA256:MRXjQ5h8KMsgJUqUmf/pzW4oLzOSMIMzWU2GfvogPH0",
+          "observed": true,
+          "identity_map_entry": true,
+          "ownership_status": "owned",
+          "offboarded_access": true,
+          "possession_verified": true,
+          "algorithm": "ssh-ed25519",
+          "occurrences": 1,
+          "hosts": [
+            "web-01"
+          ],
+          "accounts": [
+            "deploy@web-01"
+          ],
+          "claims": [
+            {
+              "identity": "alice@example.com",
+              "display_name": "Alice",
+              "kind": "human",
+              "identity_status": "offboarded",
+              "verification": "possession_verified",
+              "source": "manual",
+              "recorded_at": "2026-08-11T13:00:00Z",
+              "verified_at": "2026-08-12T13:00:00Z"
+            }
+          ]
+        }
+      ],
+      "findings": [
+        {
+          "rule_id": "offboarded_identity_access",
+          "rule_version": "1",
+          "severity": "high",
+          "title": "Offboarded identity still has observed SSH access",
+          "fingerprint": "SHA256:MRXjQ5h8KMsgJUqUmf/pzW4oLzOSMIMzWU2GfvogPH0",
+          "occurrences": 1,
+          "hosts": [
+            "web-01"
+          ],
+          "evidence": [
+            "offboarded identities: alice@example.com"
+          ],
+          "coverage_caveat": "This is a read-only observation; no access has been removed.",
+          "recommended_action": "Confirm the offboarding record and prepare a reviewed removal plan for every observed access edge."
+        }
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "before_review_id": "review_22e3d6a0b566dc118231db4e",
+      "after_review_id": "review_7bc73445dd3e335e58b2810e",
+      "before_scan_id": "scan_one",
+      "after_scan_id": "scan_two",
+      "identity_changes": [
+        {
+          "action": "changed",
+          "identity_id": "alice@example.com",
+          "before": {
+            "id": "alice@example.com",
+            "display_name": "Alice",
+            "kind": "human",
+            "status": "active"
+          },
+          "after": {
+            "id": "alice@example.com",
+            "display_name": "Alice",
+            "kind": "human",
+            "status": "offboarded"
+          }
+        }
+      ],
+      "claim_changes": [
+        {
+          "action": "removed",
+          "fingerprint": "SHA256:4wyvq4+C9zfYxQLEtmV/iKvlJKIp7+g6ICK+2Qo2OzE",
+          "identity_id": "alice@example.com",
+          "before": {
+            "fingerprint": "SHA256:4wyvq4+C9zfYxQLEtmV/iKvlJKIp7+g6ICK+2Qo2OzE",
+            "claim": {
+              "identity": "alice@example.com",
+              "display_name": "Alice",
+              "kind": "human",
+              "identity_status": "active",
+              "verification": "claimed_by_identity",
+              "source": "manual",
+              "recorded_at": "2026-08-11T13:00:00Z"
+            }
+          }
+        },
+        {
+          "action": "added",
+          "fingerprint": "SHA256:MRXjQ5h8KMsgJUqUmf/pzW4oLzOSMIMzWU2GfvogPH0",
+          "identity_id": "alice@example.com",
+          "after": {
+            "fingerprint": "SHA256:MRXjQ5h8KMsgJUqUmf/pzW4oLzOSMIMzWU2GfvogPH0",
+            "claim": {
+              "identity": "alice@example.com",
+              "display_name": "Alice",
+              "kind": "human",
+              "identity_status": "offboarded",
+              "verification": "possession_verified",
+              "source": "manual",
+              "recorded_at": "2026-08-11T13:00:00Z",
+              "verified_at": "2026-08-12T13:00:00Z"
+            }
+          }
+        }
+      ],
+      "key_changes": [
+        {
+          "action": "removed",
+          "fingerprint": "SHA256:4wyvq4+C9zfYxQLEtmV/iKvlJKIp7+g6ICK+2Qo2OzE",
+          "before": {
+            "fingerprint": "SHA256:4wyvq4+C9zfYxQLEtmV/iKvlJKIp7+g6ICK+2Qo2OzE",
+            "observed": true,
+            "identity_map_entry": true,
+            "ownership_status": "owned",
+            "offboarded_access": false,
+            "possession_verified": false,
+            "algorithm": "ssh-ed25519",
+            "occurrences": 1,
+            "hosts": [
+              "web-01"
+            ],
+            "accounts": [
+              "deploy@web-01"
+            ]
+          }
+        },
+        {
+          "action": "added",
+          "fingerprint": "SHA256:MRXjQ5h8KMsgJUqUmf/pzW4oLzOSMIMzWU2GfvogPH0",
+          "after": {
+            "fingerprint": "SHA256:MRXjQ5h8KMsgJUqUmf/pzW4oLzOSMIMzWU2GfvogPH0",
+            "observed": true,
+            "identity_map_entry": true,
+            "ownership_status": "owned",
+            "offboarded_access": true,
+            "possession_verified": true,
+            "algorithm": "ssh-ed25519",
+            "occurrences": 1,
+            "hosts": [
+              "web-01"
+            ],
+            "accounts": [
+              "deploy@web-01"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

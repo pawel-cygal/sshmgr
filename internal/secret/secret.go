@@ -260,3 +260,10 @@ func KeyringGet(key string) (string, error) {
 func KeyringDelete(key string) error {
 	return keyring.Delete(KeyringService, key)
 }
+
+// IsKeyringNotFound distinguishes a genuinely absent entry from a transient
+// or backend error. Callers that replace secrets must never treat an unknown
+// previous state as safe to delete during rollback.
+func IsKeyringNotFound(err error) bool {
+	return errors.Is(err, keyring.ErrNotFound)
+}

@@ -32,6 +32,15 @@ const (
 	// ActionWatch re-runs a command on one host. extraArgs is {"<cmd…>"};
 	// alias carries the host.
 	ActionWatch Action = "watch"
+	// ActionAudit runs the task-oriented audit workflow with automatic private
+	// project state. extraArgs carries the canonical selector or a lookup.
+	ActionAudit Action = "audit"
+	// ActionAccess runs an access lifecycle or expert command. extraArgs starts
+	// with the access subcommand and carries every option selected in the form.
+	ActionAccess Action = "access"
+	// ActionCloud runs a Cloud artifact/profile command. Offline preparation
+	// stays local; login, status, and upload are explicit network operations.
+	ActionCloud Action = "cloud"
 	// ActionPlaybook runs an Ansible playbook. extraArgs is the playbook
 	// name followed by a {--host a,b | --group g} selector and optional
 	// {--check, --diff, --extra-vars V} flags.
@@ -271,6 +280,9 @@ func Run(cfg *config.Config, configPath string) (string, Action, []string, error
 				state.openWatchPrompt(alias)
 			}
 			return nil
+		case 'u':
+			state.openAccessMenu()
+			return nil
 		case 'P':
 			state.openPlaybookForm()
 			return nil
@@ -482,7 +494,7 @@ func helpTextFull() string {
 	line1 := []string{
 		pill("Enter", "shell"), pill("s", "sftp"), pill("f", "files"),
 		pill("p", "fwd"), pill("c", "snippet"), pill("x", "exec"),
-		pill("w", "watch"), pill("P", "playbook"),
+		pill("w", "watch"), pill("u", "audit"), pill("P", "playbook"),
 	}
 	line2 := []string{
 		pill("Space", "mark"), pill("Tab", "tree"), pill("S", "sort"),
@@ -498,7 +510,7 @@ func helpTextFull() string {
 func helpTextCompact() string {
 	return strings.Join([]string{
 		pill("Enter", "shell"), pill("s", "sftp"), pill("f", "files"),
-		pill("p", "fwd"), pill("x", "exec"), pill("/", "filter"),
+		pill("p", "fwd"), pill("x", "exec"), pill("u", "audit"), pill("/", "filter"),
 		pill("?", "help"), pill("q", "quit"),
 	}, " ")
 }
@@ -539,6 +551,7 @@ func fullHelpText() string {
 	b.WriteString(row("F1", "about — version, config, license"))
 	b.WriteString(row("P", "run an Ansible playbook"))
 	b.WriteString(row("x / w", "exec a command / watch a command"))
+	b.WriteString(row("u", "access audit: scan, ownership, offline Cloud artifacts, reports and lookups"))
 	b.WriteString(row("Space", "toggle multi-select on the host"))
 	b.WriteString(row("Tab", "switch flat / tree view"))
 	b.WriteString(row("S", "toggle sort: name / recently used"))

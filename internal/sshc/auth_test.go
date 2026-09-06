@@ -1,6 +1,7 @@
 package sshc
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/pem"
@@ -129,6 +130,83 @@ func TestAuthMethodsMissingConfiguredKeyIsError(t *testing.T) {
 	cleanup()
 	if err == nil || !strings.Contains(err.Error(), "cannot read SSH key") {
 		t.Fatalf("expected missing key error, got %v", err)
+	}
+}
+
+func TestAuthMethodsBatchModeNeverAddsInteractiveFallback(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := ssh.MarshalPrivateKey(private, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "id_batch")
+	if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	methods, cleanup, err := authMethods(config.HostConfig{
+		Key:            path,
+		PasswordPrompt: true,
+		AutoDuoPush:    true,
+		BatchMode:      true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if len(methods) != 1 {
+		t.Fatalf("batch auth offered %d methods, want only the configured key", len(methods))
+	}
+}
+
+func TestAuthMethodsBatchModeRejectsPromptOnlyAuth(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	_, cleanup, err := authMethods(config.HostConfig{PasswordPrompt: true, BatchMode: true})
+	cleanup()
+	if err == nil || !strings.Contains(err.Error(), "no non-interactive") {
+		t.Fatalf("expected batch-mode non-interactive error, got %v", err)
+	}
+}
+
+func TestHostKeyCallbackBatchModeNeverTrustsUnknownHost(t *testing.T) {
+	knownHosts := filepath.Join(t.TempDir(), "known_hosts")
+	if err := os.WriteFile(knownHosts, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSHMGR_KNOWN_HOSTS", knownHosts)
+	callback, err := hostKeyCallback(true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ssh.NewPublicKey(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = callback("new.example:22", &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 22}, key)
+	if err == nil || !strings.Contains(err.Error(), "unknown host key") {
+		t.Fatalf("batch mode trusted an unknown key: %v", err)
+	}
+	data, err := os.ReadFile(knownHosts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("batch mode modified known_hosts: %q", data)
+	}
+}
+
+func TestHostKeyCallbackBatchModeRequiresExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "known_hosts")
+	t.Setenv("SSHMGR_KNOWN_HOSTS", path)
+	if _, err := hostKeyCallback(false, true); err == nil || !strings.Contains(err.Error(), "requires an existing") {
+		t.Fatalf("missing known_hosts accepted in batch mode: %v", err)
 	}
 }
 

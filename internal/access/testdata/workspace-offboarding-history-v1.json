@@ -1,0 +1,150 @@
+{
+  "schema_version": "1",
+  "offboarding_history_id": "offboarding_history_310c18f9c9761b2f01a37023",
+  "workspace": "client-a",
+  "workspace_history_id": "history_fce43e4a672aeb94290d038a",
+  "latest_scan_id": "scan_after",
+  "scans": [
+    {
+      "scan_id": "scan_fixture",
+      "completed_at": "2026-08-11T12:00:01Z"
+    },
+    {
+      "scan_id": "scan_after",
+      "completed_at": "2026-08-12T12:00:00Z"
+    }
+  ],
+  "summary": {
+    "identities": 1,
+    "checks": 1,
+    "current_complete": 1,
+    "current_still_present": 0,
+    "current_inconclusive": 0,
+    "stale": 0
+  },
+  "latest": [
+    {
+      "identity": {
+        "id": "former@example.com",
+        "display_name": "\u003cFormer \u0026 Operator\u003e",
+        "kind": "human",
+        "status": "offboarded"
+      },
+      "check_id": "offboarding_check_a2bf9419834a4630ce320bf1",
+      "after_scan_id": "scan_after",
+      "after_completed_at": "2026-08-12T12:00:00Z",
+      "outcome": "complete",
+      "current": true,
+      "baseline_access_edges": 1,
+      "still_observed_edges": 0,
+      "not_observed_edges": 1,
+      "newly_observed_edges": 0,
+      "blocking_reasons": 0,
+      "reason_codes": [
+        "mapped_access_not_observed"
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "schema_version": "1",
+      "check_id": "offboarding_check_a2bf9419834a4630ce320bf1",
+      "baseline_report_id": "offboarding_4d81137141421b1a20e077c5",
+      "baseline_report_sha256": "SHA256:dac08fb9eea6f3ec6bb772b51c07378c4a4c2de6fb93b0d3dba6035e7392089d",
+      "before_scan_id": "scan_fixture",
+      "before_review_id": "review_84848203b9d23a08b4759ea7",
+      "after_scan_id": "scan_after",
+      "after_review_id": "review_10ccefad79cb99124ac58dc3",
+      "before_snapshot_sha256": "SHA256:bb8047d17011f165e69e95f6d97e2b49fb6691f204dc4bacfb5454a8c6cfb217",
+      "before_review_sha256": "SHA256:61b5479d0276e7751d3b0a3502a836189365eee2ea3db2120794fe548c70b75c",
+      "after_snapshot_sha256": "SHA256:1718eb7d80b4e8b165f52922caae9d616b060e9798bee43c70f41e041add34b1",
+      "after_review_sha256": "SHA256:f79b09c44683d33a9ecaf8fc26abbf90bbd0e78122e57b3025d485b86c1996e3",
+      "identity": {
+        "id": "former@example.com",
+        "display_name": "\u003cFormer \u0026 Operator\u003e",
+        "kind": "human",
+        "status": "offboarded"
+      },
+      "safety": {
+        "mode": "report_only",
+        "remote_changes": false,
+        "executable": false,
+        "source_digests_included": false,
+        "requires_fresh_scan_before_remediation": true
+      },
+      "outcome": "complete",
+      "comparison": {
+        "comparable": true,
+        "identity_present_after": true,
+        "identity_offboarded_after": true,
+        "claims_unchanged": true,
+        "fresh_after_snapshot": true
+      },
+      "before_coverage": {
+        "hosts_requested": 1,
+        "hosts_full": 1,
+        "hosts_partial": 0,
+        "hosts_failed": 0
+      },
+      "after_coverage": {
+        "hosts_requested": 1,
+        "hosts_full": 1,
+        "hosts_partial": 0,
+        "hosts_failed": 0
+      },
+      "summary": {
+        "baseline_keys": 1,
+        "current_keys": 1,
+        "baseline_access_edges": 1,
+        "still_observed_edges": 0,
+        "not_observed_edges": 1,
+        "newly_observed_edges": 0,
+        "blocking_reasons": 0
+      },
+      "baseline_keys": [
+        "SHA256:4wyvq4+C9zfYxQLEtmV/iKvlJKIp7+g6ICK+2Qo2OzE"
+      ],
+      "current_keys": [
+        "SHA256:4wyvq4+C9zfYxQLEtmV/iKvlJKIp7+g6ICK+2Qo2OzE"
+      ],
+      "baseline_access": [
+        {
+          "fingerprint": "SHA256:4wyvq4+C9zfYxQLEtmV/iKvlJKIp7+g6ICK+2Qo2OzE",
+          "host": "web-01",
+          "account": "deploy",
+          "evidence": [
+            {
+              "host": "web-01",
+              "account": "deploy",
+              "source": ".ssh/authorized_keys",
+              "line": 1,
+              "coverage": "full"
+            }
+          ]
+        }
+      ],
+      "not_observed": [
+        {
+          "fingerprint": "SHA256:4wyvq4+C9zfYxQLEtmV/iKvlJKIp7+g6ICK+2Qo2OzE",
+          "host": "web-01",
+          "account": "deploy",
+          "evidence": [
+            {
+              "host": "web-01",
+              "account": "deploy",
+              "source": ".ssh/authorized_keys",
+              "line": 1,
+              "coverage": "full"
+            }
+          ]
+        }
+      ],
+      "reasons": [
+        {
+          "code": "mapped_access_not_observed",
+          "message": "No mapped SSH access edge is observed after a comparable, full-coverage rescan with unchanged ownership claims."
+        }
+      ]
+    }
+  ]
+}

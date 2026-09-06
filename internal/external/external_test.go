@@ -187,6 +187,63 @@ func TestCapturedArgvPinsBatchMode(t *testing.T) {
 	}
 }
 
+func TestCapturedInputArgvPinsReadOnlyCollectorSafety(t *testing.T) {
+	h := config.HostConfig{
+		Host: "ssh-alias",
+		SSHOptions: []string{
+			"BatchMode=no",
+			"RequestTTY=force",
+			"StdinNull=yes",
+			"ClearAllForwardings=no",
+			"PermitLocalCommand=yes",
+			"StrictHostKeyChecking=accept-new",
+			"UpdateHostKeys=yes",
+			"RemoteCommand=unsafe",
+			"UserKnownHostsFile=/tmp/collector-known-hosts",
+		},
+	}
+	argv := capturedInputArgv(h, "sh -s -- scan")
+	joined := strings.Join(argv, " ")
+	for _, required := range []string{
+		"BatchMode=yes",
+		"RequestTTY=no",
+		"StdinNull=no",
+		"ClearAllForwardings=yes",
+		"PermitLocalCommand=no",
+		"StrictHostKeyChecking=yes",
+		"UpdateHostKeys=no",
+		"RemoteCommand=none",
+		"UserKnownHostsFile=/tmp/collector-known-hosts",
+	} {
+		if !strings.Contains(joined, required) {
+			t.Errorf("collector argv is missing %q: %v", required, argv)
+		}
+	}
+	for _, forbidden := range []string{
+		"BatchMode=no",
+		"RequestTTY=force",
+		"StdinNull=yes",
+		"ClearAllForwardings=no",
+		"PermitLocalCommand=yes",
+		"StrictHostKeyChecking=accept-new",
+		"UpdateHostKeys=yes",
+		"RemoteCommand=unsafe",
+	} {
+		if strings.Contains(joined, forbidden) {
+			t.Errorf("collector argv retained unsafe option %q: %v", forbidden, argv)
+		}
+	}
+	if argv[len(argv)-2] != "ssh-alias" || argv[len(argv)-1] != "sh -s -- scan" {
+		t.Fatalf("collector target/command mismatch: %v", argv)
+	}
+}
+
+func TestRunCapturedInputContextRejectsInvalidLimit(t *testing.T) {
+	if _, _, _, err := RunCapturedInputContext(t.Context(), config.HostConfig{Host: "unused"}, "true", "", 0); err == nil {
+		t.Fatal("zero stdout limit was accepted")
+	}
+}
+
 func TestCappedBufferBoundsOutput(t *testing.T) {
 	b := newCappedBuffer(4)
 	if n, err := b.Write([]byte("abcdefgh")); err != nil || n != 8 {

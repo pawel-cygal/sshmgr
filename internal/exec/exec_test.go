@@ -13,11 +13,11 @@ import (
 
 func selectCfg() *config.Config {
 	return &config.Config{
-		Groups: map[string]config.GroupDefaults{"web": {}},
+		Groups: map[string]config.GroupDefaults{"web": {}, "db": {}},
 		Hosts: map[string]config.HostConfig{
 			"a": {Host: "1", Groups: []string{"web"}},
 			"b": {Host: "2", Groups: []string{"web"}, Tags: []string{"prod"}},
-			"c": {Host: "3", Tags: []string{"prod"}},
+			"c": {Host: "3", Groups: []string{"db"}, Tags: []string{"prod"}},
 			"d": {Host: "4"},
 		},
 	}
@@ -43,6 +43,17 @@ func TestSelectGroup(t *testing.T) {
 	}
 }
 
+func TestSelectRepeatedGroupsReturnsCanonicalUnion(t *testing.T) {
+	selector := Selector{Groups: []string{"db", "web", "db"}}
+	if groups := SelectorGroups(selector); !reflect.DeepEqual(groups, []string{"db", "web"}) {
+		t.Fatalf("canonical groups=%v", groups)
+	}
+	got := Select(selectCfg(), selector)
+	if !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+		t.Fatalf("group union: got %v", got)
+	}
+}
+
 func TestSelectTag(t *testing.T) {
 	got := Select(selectCfg(), Selector{Tag: "prod"})
 	if !reflect.DeepEqual(got, []string{"b", "c"}) {
@@ -64,6 +75,12 @@ func TestValidateSelectorRejectsAmbiguousAndUnknownHosts(t *testing.T) {
 	}
 	if err := ValidateSelector(cfg, Selector{Group: "web", Tag: "prod"}); err == nil {
 		t.Fatal("--group plus --tag must be rejected")
+	}
+	if err := ValidateSelector(cfg, Selector{Groups: []string{"web", "missing"}}); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("valid plus unknown repeated group was not rejected: %v", err)
+	}
+	if err := ValidateSelector(cfg, Selector{Groups: []string{"web", "db", "web"}}); err != nil {
+		t.Fatalf("valid repeated groups rejected: %v", err)
 	}
 	if err := ValidateSelector(cfg, Selector{Hosts: []string{"a", "missing"}}); err == nil {
 		t.Fatal("an explicit unknown alias must be rejected")

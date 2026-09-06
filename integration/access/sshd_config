@@ -1,0 +1,14 @@
+Port 22
+ListenAddress 0.0.0.0
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/keys/%u-%U
+StrictModes no
+Subsystem sftp internal-sftp
+UsePAM no
+LogLevel VERBOSE
+
+Match User device
+    ForceCommand /usr/local/bin/network-cli

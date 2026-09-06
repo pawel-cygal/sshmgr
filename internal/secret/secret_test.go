@@ -58,6 +58,17 @@ func TestResolveSpecKeyringSubstitutes(t *testing.T) {
 	}
 }
 
+func TestIsKeyringNotFound(t *testing.T) {
+	keyring.MockInit()
+	_, err := KeyringGet("missing-entry")
+	if !IsKeyringNotFound(err) {
+		t.Fatalf("missing entry error not recognized: %v", err)
+	}
+	if IsKeyringNotFound(fmt.Errorf("backend unavailable")) {
+		t.Fatal("backend error misclassified as missing entry")
+	}
+}
+
 func TestResolveHostPasswordSubstitutesAlias(t *testing.T) {
 	got, err := ResolveHostPassword(config.HostConfig{
 		Alias: "db-replica", Host: "10.0.0.5", PasswordCmd: "echo secret-for-{{alias}}",

@@ -36,6 +36,18 @@ All notable changes to sshmgr are documented here. The project follows
   details pane also names keyring/command/prompt password backends instead of
   showing an empty `pass:` field.
 
+### Cloud client and access lifecycle
+
+- Add organization/project Cloud profiles, authenticated bundle upload and
+  one-command evidence push while keeping preparation and inspection offline.
+- Add browser-approved device login for human operators and separate OS-keyring
+  credentials for human sessions and project runners.
+- Add task-oriented `audit` and `access` workflows for invitation, possession
+  status, approval, desired-state planning, synchronization and revocation.
+- Publish the versioned `cloudcontract` transport/evidence boundary used by a
+  separately maintained hosted service; no WebPanel, database or SaaS server
+  implementation is distributed in this repository.
+
 ### TUI
 
 - Five new colour palettes — `catppuccin`, `tokyonight`, `nord`, `rosepine`

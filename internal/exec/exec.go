@@ -30,10 +30,27 @@ import (
 // Selector picks hosts from cfg.Hosts. Empty selector matches nothing —
 // callers must explicitly request --all if they want every alias.
 type Selector struct {
-	Group string   // match hosts in this group (after ResolveHost merge)
-	Tag   string   // match hosts with this tag
-	Hosts []string // explicit alias list
-	All   bool     // match every alias in cfg
+	Group  string   // match hosts in this group (legacy single-group callers)
+	Groups []string // match the union of these groups (after ResolveHost merge)
+	Tag    string   // match hosts with this tag
+	Hosts  []string // explicit alias list
+	All    bool     // match every alias in cfg
+}
+
+// SelectorGroups returns the canonical, deduplicated group union represented
+// by either the legacy Group field or the repeatable Groups field.
+func SelectorGroups(selector Selector) []string {
+	seen := map[string]bool{}
+	groups := make([]string, 0, len(selector.Groups)+1)
+	for _, group := range append([]string{selector.Group}, selector.Groups...) {
+		group = strings.TrimSpace(group)
+		if group != "" && !seen[group] {
+			seen[group] = true
+			groups = append(groups, group)
+		}
+	}
+	sort.Strings(groups)
+	return groups
 }
 
 // ValidateSelector prevents ambiguous fleet scope. A destructive command must
@@ -41,7 +58,8 @@ type Selector struct {
 // --group/--tag based on switch ordering.
 func ValidateSelector(cfg *config.Config, s Selector) error {
 	count := 0
-	if s.Group != "" {
+	groups := SelectorGroups(s)
+	if len(groups) > 0 {
 		count++
 	}
 	if s.Tag != "" {
@@ -55,6 +73,25 @@ func ValidateSelector(cfg *config.Config, s Selector) error {
 	}
 	if count != 1 {
 		return fmt.Errorf("specify exactly one selector: --group, --tag, --host, or --all")
+	}
+	if len(groups) > 0 {
+		unknown := make([]string, 0)
+		for _, group := range groups {
+			matched := false
+			for alias := range cfg.Hosts {
+				host, ok := cfg.ResolveHost(alias)
+				if ok && containsString(host.Groups, group) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				unknown = append(unknown, group)
+			}
+		}
+		if len(unknown) > 0 {
+			return fmt.Errorf("unknown or empty group(s): %s", strings.Join(unknown, ", "))
+		}
 	}
 	if len(s.Hosts) > 0 {
 		var unknown []string
@@ -74,12 +111,13 @@ func ValidateSelector(cfg *config.Config, s Selector) error {
 // Select returns the alphabetically-sorted aliases matching s.
 func Select(cfg *config.Config, s Selector) []string {
 	out := []string{}
+	groups := SelectorGroups(s)
 	for alias := range cfg.Hosts {
 		h, _ := cfg.ResolveHost(alias)
 		switch {
 		case s.All:
 			out = append(out, alias)
-		case s.Group != "" && containsString(h.Groups, s.Group):
+		case len(groups) > 0 && containsAnyString(h.Groups, groups):
 			out = append(out, alias)
 		case s.Tag != "" && containsString(h.Tags, s.Tag):
 			out = append(out, alias)
@@ -89,6 +127,15 @@ func Select(cfg *config.Config, s Selector) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func containsAnyString(values, wanted []string) bool {
+	for _, candidate := range wanted {
+		if containsString(values, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 // Result is one host's outcome.

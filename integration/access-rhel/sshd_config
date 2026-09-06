@@ -1,0 +1,17 @@
+Port 22
+ListenAddress 0.0.0.0
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/keys/%u-%U
+AuthorizedKeysCommand /bin/false
+AuthorizedKeysCommandUser nobody
+TrustedUserCAKeys /etc/ssh/user_ca.pub
+AuthorizedPrincipalsFile /etc/ssh/principals/%u
+AuthorizedPrincipalsCommand /bin/false
+AuthorizedPrincipalsCommandUser nobody
+StrictModes no
+Subsystem sftp internal-sftp
+UsePAM no
+LogLevel VERBOSE

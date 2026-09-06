@@ -318,7 +318,7 @@ func TestPill(t *testing.T) {
 func TestHelpTextCoversFooterActions(t *testing.T) {
 	got := helpText(30)
 	for _, label := range []string{
-		"shell", "sftp", "files", "fwd", "snippet", "exec", "watch", "playbook",
+		"shell", "sftp", "files", "fwd", "snippet", "exec", "watch", "audit", "playbook",
 		"mark", "tree", "sort", "host", "group", "filter", "help", "quit",
 	} {
 		if !strings.Contains(got, label) {

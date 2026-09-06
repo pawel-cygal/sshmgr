@@ -27,22 +27,50 @@ func suggestions(t *testing.T, argv []string, word string) []string {
 	return strings.Fields(buf.String())
 }
 
-func TestSuggestOffersAllPublicSubcommands(t *testing.T) {
+func TestSuggestOffersOnlyTaskOrientedSubcommands(t *testing.T) {
 	useConfig(t, "hosts:\n  web01:\n    host: 10.0.0.1\n")
 	got := map[string]bool{}
 	for _, s := range suggestions(t, nil, "") {
 		got[s] = true
 	}
-	// Every command dispatched by main.go's switch must be completable.
 	for _, want := range []string{
-		"ui", "about", "list", "groups", "info", "add", "edit", "rm", "trust",
-		"theme", "keyring", "scp", "sftp", "files", "fwd", "kvm", "exec",
-		"watch", "rotate-key", "import", "export", "playbook", "lint", "version",
-		"history", "completion", "help",
+		"connect", "audit", "login", "logout", "whoami", "access", "cloud", "ui", "version", "help",
 	} {
 		if !got[want] {
 			t.Errorf("completion is missing subcommand %q", want)
 		}
+	}
+	for _, hidden := range []string{"scan", "exec", "rotate-key", "bundle-build", "history"} {
+		if got[hidden] {
+			t.Errorf("expert command %q leaked into default completion", hidden)
+		}
+	}
+}
+
+func TestSuggestOffersAccessSubcommands(t *testing.T) {
+	useConfig(t, "hosts:\n  graph-host:\n    host: 10.0.0.1\n")
+	got := suggestions(t, []string{"access"}, "")
+	want := []string{"approve", "help", "invite", "revoke", "status", "sync"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("access completion = %v, want %v", got, want)
+	}
+}
+
+func TestSuggestOffersCloudSubcommands(t *testing.T) {
+	useConfig(t, "hosts:\n  cloud-host:\n    host: 10.0.0.1\n")
+	got := suggestions(t, []string{"cloud"}, "")
+	want := []string{"help", "login", "project", "status"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("cloud completion = %v, want %v", got, want)
+	}
+}
+
+func TestSuggestOffersAuditTasks(t *testing.T) {
+	useConfig(t, "hosts:\n  web01:\n    host: 10.0.0.1\n")
+	got := suggestions(t, []string{"audit"}, "")
+	want := []string{"diff", "help", "push", "show", "where-is-key", "who-has"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("audit completion = %v, want %v", got, want)
 	}
 }
 

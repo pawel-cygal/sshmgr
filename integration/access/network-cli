@@ -1,0 +1,5 @@
+#!/bin/sh
+# Simulate an authenticated network appliance that exposes its own CLI rather
+# than a Unix shell or SFTP subsystem. The access scanner must preserve failed
+# coverage while distinguishing this from a connection/authentication failure.
+printf 'Hydra>\n'

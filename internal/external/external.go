@@ -208,6 +208,74 @@ func capturedArgv(h config.HostConfig, command string) []string {
 	return append([]string{"-o", "BatchMode=yes"}, SSHCommandArgv(safe, command, false)...)
 }
 
+// capturedInputArgv builds the stricter OpenSSH invocation used by read-only
+// fleet collectors which stream a fixed protocol over stdin. The leading
+// options cannot be weakened through host ssh_options: OpenSSH uses the first
+// value obtained for these settings, and matching user-provided values are
+// removed as defence in depth.
+func capturedInputArgv(h config.HostConfig, command string) []string {
+	protected := []string{
+		"BatchMode",
+		"RequestTTY",
+		"StdinNull",
+		"ClearAllForwardings",
+		"PermitLocalCommand",
+		"StrictHostKeyChecking",
+		"UpdateHostKeys",
+		"RemoteCommand",
+	}
+	safe := h
+	for _, option := range protected {
+		safe = withoutOption(safe, option)
+	}
+	argv := []string{
+		"-o", "BatchMode=yes",
+		"-o", "RequestTTY=no",
+		"-o", "StdinNull=no",
+		"-o", "ClearAllForwardings=yes",
+		"-o", "PermitLocalCommand=no",
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UpdateHostKeys=no",
+		"-o", "RemoteCommand=none",
+	}
+	return append(argv, SSHCommandArgv(safe, command, false)...)
+}
+
+// RunCapturedInputContext executes a non-interactive OpenSSH command while
+// supplying protocol data on stdin and keeping stdout separate from stderr.
+// Both streams are consumed through bounded buffers so a broken or hostile
+// endpoint cannot make the scanner retain unbounded output. It never logs the
+// remote command, which may contain the fixed collector implementation.
+func RunCapturedInputContext(ctx context.Context, h config.HostConfig, command, input string, stdoutLimit int64) ([]byte, string, int, error) {
+	if stdoutLimit < 1 || stdoutLimit > int64(int(^uint(0)>>1)) {
+		return nil, "", 0, fmt.Errorf("invalid external ssh stdout limit %d", stdoutLimit)
+	}
+	binPath, err := exec.LookPath("ssh")
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("cannot find ssh in PATH: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, binPath, capturedInputArgv(h, command)...)
+	cmd.Stdin = strings.NewReader(input)
+	stdout := newCappedBuffer(int(stdoutLimit))
+	stderr := newCappedBuffer(8192)
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	runErr := cmd.Run()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, stderr.String(), 0, ctxErr
+	}
+	if stdout.truncated {
+		return nil, stderr.String(), 0, fmt.Errorf("external ssh stdout exceeds %d bytes", stdoutLimit)
+	}
+	data := append([]byte(nil), stdout.buf.Bytes()...)
+	if runErr == nil {
+		return data, stderr.String(), 0, nil
+	}
+	if exitErr, ok := runErr.(*exec.ExitError); ok {
+		return data, stderr.String(), exitErr.ExitCode(), nil
+	}
+	return data, stderr.String(), 0, runErr
+}
+
 // RunCapturedContext runs a one-shot remote command via the system ssh
 // client and returns its combined stdout+stderr. Cancelling ctx kills the
 // ssh process — used by the fleet exec path to enforce a per-host timeout.

@@ -1,0 +1,64 @@
+{
+  "schema_version": "1",
+  "scan_id": "scan_golden_v1",
+  "summary": {
+    "hosts": 1,
+    "hosts_full": 0,
+    "hosts_partial": 1,
+    "hosts_failed": 0,
+    "accounts": 1,
+    "keys": 1,
+    "identity_hints": 1,
+    "access_edges": 1,
+    "claim_edges": 1
+  },
+  "nodes": [
+    {
+      "id": "identity_hint:d8b8ed9f15989eb7ca0006ebb868931b0bc1eadbfcc6351c98ab456b1f9b1218",
+      "kind": "identity_hint",
+      "label": "owner hint",
+      "verification": "unverified_comment"
+    },
+    {
+      "id": "key:5602489c07271057b35eb8cdfa7fda0a77cf98a622f17246246f3d87c2e0e1d4",
+      "kind": "key",
+      "label": "SHA256:golden",
+      "fingerprint": "SHA256:golden",
+      "algorithm": "ssh-ed25519",
+      "bits": 256
+    },
+    {
+      "id": "account:af94fd8aed6fb68ca48c370d7d7a8bd5068ce5370e074f62debbb1ab5edf1299",
+      "kind": "account",
+      "label": "deploy@web-01",
+      "host": "web-01",
+      "account": "deploy"
+    },
+    {
+      "id": "host:bb874c3afcb4ac45ef1c5af3a03c4cbae8b503ce48ba32ac8a11935f79c40842",
+      "kind": "host",
+      "label": "web-01",
+      "host": "web-01",
+      "coverage": "partial"
+    }
+  ],
+  "edges": [
+    {
+      "from": "key:5602489c07271057b35eb8cdfa7fda0a77cf98a622f17246246f3d87c2e0e1d4",
+      "to": "account:af94fd8aed6fb68ca48c370d7d7a8bd5068ce5370e074f62debbb1ab5edf1299",
+      "kind": "authorizes",
+      "source": ".ssh/authorized_keys",
+      "line": 1
+    },
+    {
+      "from": "identity_hint:d8b8ed9f15989eb7ca0006ebb868931b0bc1eadbfcc6351c98ab456b1f9b1218",
+      "to": "key:5602489c07271057b35eb8cdfa7fda0a77cf98a622f17246246f3d87c2e0e1d4",
+      "kind": "claims"
+    },
+    {
+      "from": "account:af94fd8aed6fb68ca48c370d7d7a8bd5068ce5370e074f62debbb1ab5edf1299",
+      "to": "host:bb874c3afcb4ac45ef1c5af3a03c4cbae8b503ce48ba32ac8a11935f79c40842",
+      "kind": "on_host"
+    }
+  ]
+}

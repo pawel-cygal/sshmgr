@@ -46,12 +46,27 @@ func Suggest(w io.Writer, argv []string, word string) error {
 	if len(argv) == 0 {
 		out = append(out, subcommands...)
 	}
+	nestedOnly := false
+	if len(argv) == 1 && argv[0] == "access" {
+		out = append(out, accessSubcommands...)
+		nestedOnly = true
+	}
+	if len(argv) == 1 && argv[0] == "cloud" {
+		out = append(out, cloudSubcommands...)
+		nestedOnly = true
+	}
+	if len(argv) == 1 && argv[0] == "audit" {
+		out = append(out, auditSubcommands...)
+		nestedOnly = true
+	}
 
 	// Always offer aliases — most invocations take an alias as the first
 	// positional arg, and several subcommands (scp/sftp/files/fwd/trust)
 	// also take one.
-	for a := range cfg.Hosts {
-		out = append(out, a)
+	if !nestedOnly {
+		for a := range cfg.Hosts {
+			out = append(out, a)
+		}
 	}
 	sort.Strings(out)
 	for _, s := range out {
@@ -63,11 +78,18 @@ func Suggest(w io.Writer, argv []string, word string) error {
 }
 
 var subcommands = []string{
-	"ui", "about", "list", "groups", "info", "add", "edit", "rm", "trust",
-	"theme", "keyring", "scp", "sftp", "files", "fwd", "kvm", "exec", "watch",
-	"rotate-key", "import", "export", "playbook", "lint", "history",
-	"completion", "version", "help",
+	"connect", "audit", "login", "logout", "whoami", "access", "cloud", "ui", "version", "help",
 }
+
+var accessSubcommands = []string{
+	"invite", "status", "approve", "sync", "revoke", "help",
+}
+
+var cloudSubcommands = []string{
+	"login", "status", "project", "help",
+}
+
+var auditSubcommands = []string{"show", "diff", "who-has", "where-is-key", "push", "help"}
 
 const bashScript = `# sshmgr bash completion. Add to ~/.bashrc:
 #   source <(sshmgr completion bash)

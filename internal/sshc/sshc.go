@@ -220,7 +220,7 @@ func clientConfigFor(h config.HostConfig) (*ssh.ClientConfig, func(), error) {
 	if err != nil {
 		return nil, func() {}, err
 	}
-	hk, err := hostKeyCallback(h.AutoAcceptHostKey)
+	hk, err := hostKeyCallback(h.AutoAcceptHostKey, h.BatchMode)
 	if err != nil {
 		cleanupAuth()
 		return nil, func() {}, err
@@ -379,7 +379,7 @@ func authMethods(h config.HostConfig) ([]ssh.AuthMethod, func(), error) {
 	}
 
 	hasPassword := h.Password != "" || h.PasswordEnv != "" ||
-		h.PasswordKeyring != "" || h.PasswordCmd != "" || h.PasswordPrompt
+		h.PasswordKeyring != "" || h.PasswordCmd != "" || (!h.BatchMode && h.PasswordPrompt)
 
 	var agentConn net.Conn
 	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
@@ -412,8 +412,12 @@ func authMethods(h config.HostConfig) ([]ssh.AuthMethod, func(), error) {
 	// for hosts that purely use keyboard-interactive). Skipping it for plain
 	// password hosts avoids Dropbear-style servers replying FAILURE to a
 	// keyboard-interactive probe (`ssh: unexpected message type 51`).
-	if h.AutoDuoPush || !hasPassword {
+	if !h.BatchMode && (h.AutoDuoPush || !hasPassword) {
 		methods = append(methods, ssh.KeyboardInteractive(keyboardInteractiveFn(h)))
+	}
+	if h.BatchMode && len(methods) == 0 {
+		cleanup()
+		return nil, noCleanup, errors.New("batch mode has no non-interactive SSH authentication method")
 	}
 	return methods, cleanup, nil
 }
@@ -480,13 +484,22 @@ func looksLikeDuoPrompt(prompt string) bool {
 //   - rejects keys that differ from a stored entry (MITM-style mismatch)
 //   - on first contact, prints the fingerprint and asks the user to confirm,
 //     then appends the key to ~/.ssh/known_hosts.
-func hostKeyCallback(autoAccept bool) (ssh.HostKeyCallback, error) {
+func hostKeyCallback(autoAccept, batchMode bool) (ssh.HostKeyCallback, error) {
 	khPath, err := knownHostsPath()
 	if err != nil {
 		return nil, err
 	}
-	if err := ensureFile(khPath); err != nil {
-		return nil, err
+	if batchMode {
+		if _, err := os.Stat(khPath); err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("batch mode requires an existing known_hosts file: %s", khPath)
+			}
+			return nil, err
+		}
+	} else {
+		if err := ensureFile(khPath); err != nil {
+			return nil, err
+		}
 	}
 
 	hk, err := knownhosts.New(khPath)
@@ -519,6 +532,9 @@ func hostKeyCallback(autoAccept bool) (ssh.HostKeyCallback, error) {
 					hostname, ssh.FingerprintSHA256(key), bareHost, bareHost, port, khPath)
 			}
 			// Unknown host — TOFU.
+			if batchMode {
+				return fmt.Errorf("unknown host key for %s in batch mode (connect interactively once and verify it before scanning)", hostname)
+			}
 			if autoAccept {
 				statusf("[sshmgr] auto-accepting host key for %q (auto_accept_host_key)\n  fingerprint: %s\n",
 					hostname, ssh.FingerprintSHA256(key))

@@ -1,0 +1,77 @@
+{
+  "schema_version": "1",
+  "scan_id": "scan_golden_v1",
+  "scanner_version": "test",
+  "started_at": "2026-08-11T12:00:00Z",
+  "completed_at": "2026-08-11T12:00:01Z",
+  "scope": {
+    "mode": "current",
+    "selector": "group:pilot",
+    "requested_hosts": 1,
+    "host_exclusions": ["protected-host"],
+    "excluded_matched_hosts": ["protected-host"],
+    "include_public_keys": false
+  },
+  "summary": {
+    "hosts_requested": 1,
+    "hosts_full": 0,
+    "hosts_partial": 1,
+    "hosts_failed": 0,
+    "accounts_observed": 1,
+    "key_sources_found": 1,
+    "authorized_key_entries": 1,
+    "malformed_entries": 0,
+    "key_bytes_inspected": 80,
+    "unique_fingerprints": 1,
+    "findings_total": 1,
+    "findings_critical": 0,
+    "findings_high": 0,
+    "findings_medium": 0,
+    "findings_low": 0,
+    "findings_info": 1
+  },
+  "findings": [
+    {
+      "rule_id": "partial_scan",
+      "rule_version": "1",
+      "severity": "info",
+      "title": "SSH access coverage is partial",
+      "host": "web-01",
+      "coverage_caveat": "Unobserved SSH access sources may still grant access."
+    }
+  ],
+  "hosts": [
+    {
+      "alias": "web-01",
+      "groups": ["pilot"],
+      "coverage": "partial",
+      "limitations": ["fixture limitation"],
+      "accounts": [
+        {
+          "username": "deploy",
+          "home": "/home/deploy",
+          "sources": [
+            {
+              "type": "authorized_keys_file",
+              "path": ".ssh/authorized_keys",
+              "exists": true,
+              "content_inspected": true,
+              "mode": "0600",
+              "size": 80,
+              "entries": [
+                {
+                  "line": 1,
+                  "fingerprint": "SHA256:golden",
+                  "algorithm": "ssh-ed25519",
+                  "bits": 256,
+                  "comment": "owner hint"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "duration_ms": 25
+    }
+  ]
+}
