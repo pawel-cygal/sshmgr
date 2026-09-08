@@ -38,6 +38,8 @@ All notable changes to sshmgr are documented here. The project follows
 
 ### Cloud client and access lifecycle
 
+- Complete account-command flags and Cloud profile names without reading SSH
+  inventory or credentials; align CLI help and the Cloud guide with first login.
 - Show project-access status after human login and in `whoami`, with recovery
   hints for inaccessible projects and legacy workspaces; never automatically
   change an existing runner's project context.

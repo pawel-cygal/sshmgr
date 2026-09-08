@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/systeampl/sshmgr/internal/cloudprofile"
 	"github.com/systeampl/sshmgr/internal/config"
 )
 
@@ -36,9 +37,11 @@ func Print(w io.Writer, shell string) error {
 // the partial word). The last positional we complete is the host alias; on
 // the first slot we mix in subcommand names.
 func Suggest(w io.Writer, argv []string, word string) error {
-	cfg, _, err := config.Load()
-	if err != nil {
-		return err
+	if out, handled, err := accountCandidates(argv, word); handled {
+		if err != nil {
+			return err
+		}
+		return writeCandidates(w, out, word)
 	}
 	var out []string
 
@@ -64,17 +67,92 @@ func Suggest(w io.Writer, argv []string, word string) error {
 	// positional arg, and several subcommands (scp/sftp/files/fwd/trust)
 	// also take one.
 	if !nestedOnly {
+		cfg, _, err := config.Load()
+		if err != nil {
+			return err
+		}
 		for a := range cfg.Hosts {
 			out = append(out, a)
 		}
 	}
+	return writeCandidates(w, out, word)
+}
+
+func writeCandidates(w io.Writer, out []string, word string) error {
 	sort.Strings(out)
 	for _, s := range out {
 		if word == "" || strings.HasPrefix(s, word) {
-			fmt.Fprintln(w, s)
+			if _, err := fmt.Fprintln(w, s); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// Account completion only reads Cloud metadata, never inventory or credentials.
+func accountCandidates(argv []string, word string) ([]string, bool, error) {
+	if len(argv) == 0 {
+		return nil, false, nil
+	}
+	var flags []string
+	switch argv[0] {
+	case "login":
+		flags = []string{"--profile", "--endpoint", "--organization", "--project", "--timeout", "--no-browser", "--help"}
+	case "logout":
+		flags = []string{"--profile", "--local", "--help"}
+	case "whoami":
+		flags = []string{"--profile", "--json", "--help"}
+	default:
+		return nil, false, nil
+	}
+	used := map[string]bool{}
+	pending := ""
+	for _, arg := range argv[1:] {
+		if pending != "" {
+			pending = ""
+			continue
+		}
+		if arg == "--" {
+			return nil, true, nil
+		}
+		name, _, inline := strings.Cut(arg, "=")
+		name = "--" + strings.TrimLeft(name, "-")
+		used[name] = true
+		switch name {
+		case "--profile", "--endpoint", "--organization", "--project", "--timeout":
+			if !inline {
+				pending = name
+			}
+		}
+	}
+	prefix := ""
+	if strings.HasPrefix(word, "--profile=") {
+		pending, prefix = "--profile", "--profile="
+	} else if strings.HasPrefix(word, "-profile=") {
+		pending, prefix = "--profile", "-profile="
+	}
+	if pending == "--profile" {
+		cfg, _, err := cloudprofile.Load()
+		if err != nil {
+			return nil, true, err
+		}
+		var out []string
+		for name := range cfg.Profiles {
+			out = append(out, prefix+name)
+		}
+		return out, true, nil
+	}
+	if pending != "" {
+		return nil, true, nil
+	}
+	var out []string
+	for _, flag := range flags {
+		if !used[flag] {
+			out = append(out, flag)
+		}
+	}
+	return out, true, nil
 }
 
 var subcommands = []string{

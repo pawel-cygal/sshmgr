@@ -26,13 +26,32 @@ forwarded to a different origin.
 
 ## Connect the CLI
 
-For a human operator, select the profile supplied by the service and authorize
-the device in a browser:
+For a human operator on a fresh installation, authorize the device in a browser.
+No runner token or pre-existing profile is required:
 
 ```bash
-sshmgr cloud project use production
 sshmgr login
+sshmgr whoami
 ```
+
+The default service is `https://sshmgr.systeam.pl`. One accessible project is
+selected automatically; a terminal offers a numbered choice for multiple
+projects (`q` cancels). A new profile is saved only after selection and successful
+keyring storage. Accounts without projects must create one in the panel or ask
+an administrator for access, then retry.
+
+Use `--profile NAME --endpoint https://cloud.example.com` for a separate service.
+Without a terminal, select explicitly with `--organization ORG --project PROJECT`.
+`--no-browser` prints the approval link without launching a browser; browser
+approval is still required. Use runner credentials for unattended CI.
+
+An existing active profile retains its endpoint and project. You can log in to
+a specific existing profile with `sshmgr login --profile production`. Missing
+project access produces a warning; the CLI never switches a runner's project
+automatically. Human `whoami` remains usable independently of project access.
+
+Shell completion for `login`, `logout` and `whoami` offers flags and existing
+Cloud profile names, without loading SSH inventory or accessing the keyring.
 
 For a project runner, copy the one-time token from the WebPanel and create a
 profile. The token is read from stdin and stored in the OS keyring:
