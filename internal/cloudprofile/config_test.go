@@ -1,11 +1,73 @@
 package cloudprofile
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestProfileUpdateWithRollback(t *testing.T) {
+	for _, tc := range []struct {
+		name                                                   string
+		invalid, prepareFailure, writeFailure, rollbackFailure bool
+	}{
+		{name: "success"},
+		{name: "validate before preparing", invalid: true},
+		{name: "prepare failure", prepareFailure: true},
+		{name: "write failure", writeFailure: true},
+		{name: "rollback failure surfaced", writeFailure: true, rollbackFailure: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := useProfilePath(t)
+			prepared, rolledBack := false, false
+			rollbackErr := errors.New("test rollback failure")
+			_, err := UpdateWithRollback(func(cfg *Config) error {
+				if tc.invalid {
+					cfg.SchemaVersion = "invalid"
+					return nil
+				}
+				return Upsert(cfg, "prod", Profile{Endpoint: "https://cloud.example.test", Workspace: "prod", TokenKeyring: TokenKey("prod")}, true)
+			}, func() (func() error, error) {
+				prepared = true
+				if tc.prepareFailure {
+					return nil, errors.New("test prepare failure")
+				}
+				if tc.writeFailure {
+					// Make publication fail deterministically without permissions tricks.
+					if err := os.Mkdir(path, 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return func() error {
+					rolledBack = true
+					if tc.rollbackFailure {
+						return rollbackErr
+					}
+					return nil
+				}, nil
+			})
+			wantError := tc.invalid || tc.prepareFailure || tc.writeFailure
+			if (err != nil) != wantError || prepared == tc.invalid || rolledBack != tc.writeFailure {
+				t.Fatalf("err=%v prepared=%v rolledBack=%v", err, prepared, rolledBack)
+			}
+			if tc.rollbackFailure && !errors.Is(err, rollbackErr) {
+				t.Fatalf("rollback error lost: %v", err)
+			}
+			if !wantError {
+				cfg, _, err := Load()
+				if err != nil || cfg.ActiveProfile != "prod" {
+					t.Fatalf("profile not published: %v", err)
+				}
+			} else if !tc.writeFailure {
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("failed update published config: %v", err)
+				}
+			}
+		})
+	}
+}
 
 func useProfilePath(t *testing.T) string {
 	t.Helper()

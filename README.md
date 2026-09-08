@@ -139,6 +139,35 @@ server (XQuartz on macOS).
 
 ## Quick start
 
+### Sign in to the hosted service
+
+Run `sshmgr login` to sign in through your browser. On a fresh installation,
+this uses `https://sshmgr.systeam.pl` and creates the `systeam` Cloud profile
+after approval and project selection. No runner token is needed. An existing
+active profile keeps its configured endpoint and project.
+Both `login` and the text output of `whoami` show whether the saved project is
+listed for the signed-in account. Missing access produces a warning, not an
+automatic project switch: account commands remain usable and runner context
+stays unchanged. Ask an administrator for access or use a separate, newly named
+profile. Legacy workspace profiles show a migration hint instead of an empty
+project label. `whoami --json` retains its session JSON format.
+
+One accessible project is selected automatically. For multiple projects, an
+interactive terminal shows a numbered list; enter a number or `q` to cancel.
+In scripts, specify `sshmgr login --organization COMPANY --project PROJECT`;
+the CLI lists available choices if the selection is missing or inaccessible.
+Accounts without projects
+must create one in the panel or ask an administrator for access, then retry.
+For a separate service, use `--profile NAME --endpoint https://YOUR-SERVICE`.
+
+Human sessions are stored in the OS keyring. Runner uploads still require a
+separate runner token configured with `sshmgr cloud login`; signing in as a
+person does not grant a runner credential. SSH host configuration is unchanged.
+If the OS keyring is locked or unavailable, login fails without creating a new
+profile. Unlock the keyring and retry. A profile-save failure triggers credential
+rollback; an unused session is revoked on a best-effort basis. If revocation
+fails, the CLI warns you to review sessions in the panel.
+
 ### Manage connections locally
 
 1. Edit the config (auto-created on first run):
@@ -258,7 +287,7 @@ sshmgr watch [-n SECS] <alias> <cmd…>
 sshmgr rotate-key --new-key PATH [--group G | --tag T | --host a,b | --all]
                   [--remove-old] [--dry-run]
                             safely roll a new SSH key across a fleet
-sshmgr login [--profile NAME] [--no-browser]
+sshmgr login [--profile NAME] [--endpoint URL] [--organization ORG --project PROJECT] [--no-browser]
 sshmgr logout [--profile NAME] [--local]
 sshmgr whoami [--profile NAME] [--json]
                             authorize and inspect a human Cloud session

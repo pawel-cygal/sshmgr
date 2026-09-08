@@ -38,6 +38,14 @@ All notable changes to sshmgr are documented here. The project follows
 
 ### Cloud client and access lifecycle
 
+- Show project-access status after human login and in `whoami`, with recovery
+  hints for inaccessible projects and legacy workspaces; never automatically
+  change an existing runner's project context.
+- Support first-run `sshmgr login` without a runner profile, with hosted-service
+  defaults, interactive project selection and explicit project flags for scripts.
+- Coordinate new human profile creation with OS-keyring storage: abort on
+  keyring failure and roll back the credential when profile publication fails.
+  SSH inventory and runner credentials remain separate and unchanged.
 - Add organization/project Cloud profiles, authenticated bundle upload and
   one-command evidence push while keeping preparation and inspection offline.
 - Add browser-approved device login for human operators and separate OS-keyring

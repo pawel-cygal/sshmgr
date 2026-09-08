@@ -80,6 +80,14 @@ func Load() (*Config, string, error) {
 // Update serializes profile mutations across processes and atomically writes
 // a mode-0600 JSON file after full validation.
 func Update(mutate func(*Config) error) (string, error) {
+	return UpdateWithRollback(mutate, nil)
+}
+
+// UpdateWithRollback coordinates a profile write with an external operation
+// such as storing a credential. prepare runs after validation, under the profile
+// lock. Its rollback runs under the same lock if publishing the file fails.
+// This handles returned errors, not process crashes or power loss.
+func UpdateWithRollback(mutate func(*Config) error, prepare func() (rollback func() error, err error)) (string, error) {
 	if mutate == nil {
 		return "", errors.New("Cloud profile update is nil")
 	}
@@ -98,7 +106,23 @@ func Update(mutate func(*Config) error) (string, error) {
 		if validateErr := Validate(config); validateErr != nil {
 			return validateErr
 		}
-		return write(path, config)
+		var rollback func() error
+		if prepare != nil {
+			var prepareErr error
+			rollback, prepareErr = prepare()
+			if prepareErr != nil {
+				return prepareErr
+			}
+		}
+		if writeErr := write(path, config); writeErr != nil {
+			if rollback != nil {
+				if rollbackErr := rollback(); rollbackErr != nil {
+					return errors.Join(writeErr, fmt.Errorf("credential rollback failed: %w", rollbackErr))
+				}
+			}
+			return writeErr
+		}
+		return nil
 	})
 	return path, err
 }

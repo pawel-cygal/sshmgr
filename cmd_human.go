@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -15,9 +17,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/systeampl/sshmgr/cloudcontract"
 	"github.com/systeampl/sshmgr/internal/cloudprofile"
 	"github.com/systeampl/sshmgr/internal/humanclient"
 	"github.com/systeampl/sshmgr/internal/secret"
+	"golang.org/x/term"
 )
 
 type humanContext struct {
@@ -29,13 +33,30 @@ type humanContext struct {
 func cmdHumanLogin(args []string) {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
 	profileName := fs.String("profile", "", "Cloud profile supplying endpoint and project context")
+	endpoint := fs.String("endpoint", "", "Cloud URL for a new profile (default https://sshmgr.systeam.pl)")
+	organization := fs.String("organization", "", "organization to select after browser login")
+	project := fs.String("project", "", "project to select after browser login")
 	timeout := fs.Duration("timeout", 10*time.Minute, "maximum time to wait for browser approval")
 	noBrowser := fs.Bool("no-browser", false, "print the verification URL without trying to open it")
 	_ = fs.Parse(args)
 	if len(fs.Args()) != 0 || *timeout <= 0 || *timeout > 15*time.Minute {
-		fatal("usage: sshmgr login [--profile NAME] [--timeout 10m] [--no-browser]")
+		fatal("usage: sshmgr login [--profile NAME] [--endpoint URL] [--organization ORG --project PROJECT] [--timeout 10m] [--no-browser]")
 	}
-	human := resolveHumanContext(*profileName)
+	profiles, _, err := cloudprofile.Load()
+	if err != nil {
+		fatal(err.Error())
+	}
+	human, fresh, err := prepareHumanLogin(profiles, *profileName, *endpoint)
+	if err != nil {
+		fatal(err.Error())
+	}
+	if (*organization == "") != (*project == "") {
+		fatal("provide --organization and --project together")
+	}
+	if !fresh && (*organization != "" || *project != "") {
+		fatal("use `sshmgr cloud project set` to change an existing profile's project")
+	}
+	fmt.Printf("Signing in to %s (profile %s)\n", human.Profile.Endpoint, human.ProfileName)
 	client := newHumanClient(human, "", *timeout)
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
@@ -66,12 +87,189 @@ func cmdHumanLogin(args []string) {
 			if err != nil {
 				fatal("complete human device login: " + err.Error())
 			}
-			if err := secret.KeyringSet(human.TokenKey, issue.AccessToken); err != nil {
-				fatal(fmt.Sprintf("store human session in OS keyring %q: %v", human.TokenKey, err))
+			if fresh {
+				selected, selectErr := chooseHumanLoginProject(issue.Session, *organization, *project, term.IsTerminal(int(os.Stdin.Fd())), os.Stdin, os.Stdout)
+				if selectErr != nil {
+					revokeFailedHumanLogin(human, issue.AccessToken)
+					fatal(selectErr.Error())
+				}
+				human.Profile.Organization, human.Profile.Project = selected[0], selected[1]
+			}
+			if err := persistHumanLogin(human, fresh, issue.AccessToken); err != nil {
+				revokeFailedHumanLogin(human, issue.AccessToken)
+				fatal(err.Error())
 			}
 			fmt.Printf("Logged in as %s (%s). Human session stored in the OS keyring.\n", issue.Session.User.Email, issue.Session.User.DisplayName)
+			printHumanProjectStatus(os.Stdout, human, issue.Session)
+			fmt.Printf("Panel: %s/panel/\nNext: sshmgr whoami --profile %s\n", human.Profile.Endpoint, human.ProfileName)
 			return
 		}
+	}
+}
+
+// Authentication and project authorization are separate. A valid human session
+// remains useful for account commands even when the saved project is unavailable.
+// Never silently switch the project: the profile can also be used by a runner.
+func printHumanProjectStatus(output io.Writer, human humanContext, session cloudcontract.BrowserSession) {
+	if !human.Profile.UsesProjectContext() {
+		fmt.Fprintf(output, "Workspace: %s (legacy runner context)\n", human.Profile.Workspace)
+		fmt.Fprintln(output, "Human access commands need an organization/project profile; account commands such as whoami still work.")
+		printHumanSeparateProfileHint(output, human)
+		return
+	}
+	fmt.Fprintf(output, "Project: %s/%s\n", human.Profile.Organization, human.Profile.Project)
+	for _, org := range session.Organizations {
+		if org.Slug != human.Profile.Organization {
+			continue
+		}
+		for _, project := range org.Projects {
+			if project.Slug == human.Profile.Project {
+				fmt.Fprintln(output, "Project access: available to this account (individual actions depend on permissions).")
+				return
+			}
+		}
+	}
+	fmt.Fprintln(output, "Warning: the saved project is not listed for this account. Login succeeded, but project commands may be denied.")
+	fmt.Fprintln(output, "The saved project and runner credentials were not changed. Ask an administrator for access, or select an accessible project in a separate profile.")
+	printHumanSeparateProfileHint(output, human)
+}
+
+func printHumanSeparateProfileHint(output io.Writer, human humanContext) {
+	fmt.Fprintf(output, "Separate profile: sshmgr login --profile NEW-NAME --endpoint %s\n", human.Profile.Endpoint)
+	fmt.Fprintln(output, "Replace NEW-NAME with an unused lowercase profile name; choose a project after browser approval.")
+}
+
+func revokeFailedHumanLogin(human humanContext, token string) {
+	// Approval may already have exhausted the original login deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := newHumanClient(human, token, 10*time.Second).Logout(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "Warning: could not revoke the unused session; review sessions in the WebPanel.")
+	}
+}
+
+func persistHumanLogin(human humanContext, fresh bool, token string) error {
+	if !fresh {
+		if err := secret.KeyringSet(human.TokenKey, token); err != nil {
+			return fmt.Errorf("store human session in OS keyring: %w", err)
+		}
+		return nil
+	}
+	_, err := cloudprofile.UpdateWithRollback(func(cfg *cloudprofile.Config) error {
+		if _, exists := cfg.Profiles[human.ProfileName]; exists {
+			return errors.New("profile was created during login; retry with --profile")
+		}
+		return cloudprofile.Upsert(cfg, human.ProfileName, human.Profile, true)
+	}, func() (func() error, error) {
+		return stageHumanSession(human.TokenKey, token)
+	})
+	return err
+}
+
+func stageHumanSession(key, token string) (func() error, error) {
+	previous, err := secret.KeyringGet(key)
+	hadPrevious := err == nil
+	if err != nil && !secret.IsKeyringNotFound(err) {
+		return nil, fmt.Errorf("inspect human session in OS keyring: %w", err)
+	}
+	if err := secret.KeyringSet(key, token); err != nil {
+		return nil, fmt.Errorf("store human session in OS keyring: %w", err)
+	}
+	return func() error {
+		if hadPrevious {
+			return secret.KeyringSet(key, previous)
+		}
+		err := secret.KeyringDelete(key)
+		if secret.IsKeyringNotFound(err) {
+			return nil
+		}
+		return err
+	}, nil
+}
+
+// prepareHumanLogin never writes configuration or replaces an existing endpoint.
+func prepareHumanLogin(cfg *cloudprofile.Config, name, endpoint string) (humanContext, bool, error) {
+	name, endpoint = strings.TrimSpace(name), strings.TrimSpace(endpoint)
+	if name == "" {
+		name = cfg.ActiveProfile
+	}
+	if name == "" {
+		name = "systeam"
+	}
+	if p, ok := cfg.Profiles[name]; ok {
+		if endpoint != "" && endpoint != p.Endpoint {
+			return humanContext{}, false, errors.New("endpoint differs from the existing profile; choose a new --profile name")
+		}
+		return humanContext{name, p, "sshmgr-human:" + name}, false, nil
+	}
+	if endpoint == "" {
+		endpoint = "https://sshmgr.systeam.pl"
+	}
+	p := cloudprofile.Profile{Endpoint: endpoint, Organization: "pending", Project: "pending", TokenKeyring: cloudprofile.TokenKey(name)}
+	if err := cloudprofile.Upsert(cloudprofile.NewConfig(), name, p, true); err != nil {
+		return humanContext{}, false, err
+	}
+	p.Organization, p.Project = "", ""
+	return humanContext{name, p, "sshmgr-human:" + name}, true, nil
+}
+
+func selectHumanLoginProject(session cloudcontract.BrowserSession, organization, project string) ([2]string, error) {
+	var choices [][2]string
+	var labels []string
+	for _, org := range session.Organizations {
+		for _, p := range org.Projects {
+			labels = append(labels, org.Slug+"/"+p.Slug)
+			if organization == "" || (org.Slug == organization && p.Slug == project) {
+				choices = append(choices, [2]string{org.Slug, p.Slug})
+			}
+		}
+	}
+	if len(choices) == 1 {
+		return choices[0], nil
+	}
+	if len(labels) == 0 {
+		return [2]string{}, errors.New("no accessible projects; create a project in the WebPanel or ask your administrator for access, then run `sshmgr login` again")
+	}
+	return [2]string{}, fmt.Errorf("choose an accessible project with --organization ORG --project PROJECT and run login again; available: %s", strings.Join(labels, ", "))
+}
+
+// Only prompt on a terminal: scripts must choose their project explicitly.
+func chooseHumanLoginProject(session cloudcontract.BrowserSession, organization, project string, interactive bool, input io.Reader, output io.Writer) ([2]string, error) {
+	selected, err := selectHumanLoginProject(session, organization, project)
+	if err == nil || !interactive || organization != "" || project != "" {
+		return selected, err
+	}
+	var choices [][2]string
+	for _, org := range session.Organizations {
+		for _, p := range org.Projects {
+			choices = append(choices, [2]string{org.Slug, p.Slug})
+		}
+	}
+	if len(choices) < 2 {
+		return selected, err
+	}
+	fmt.Fprintln(output, "\nChoose the project for this Cloud profile:")
+	for i, choice := range choices {
+		fmt.Fprintf(output, "  %d. %s/%s\n", i+1, choice[0], choice[1])
+	}
+	scanner := bufio.NewScanner(input)
+	for {
+		fmt.Fprintf(output, "Project [1-%d], or q to cancel: ", len(choices))
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return [2]string{}, fmt.Errorf("read project selection: %w", err)
+			}
+			return [2]string{}, errors.New("project selection cancelled; no new profile was saved")
+		}
+		answer := strings.TrimSpace(scanner.Text())
+		if strings.EqualFold(answer, "q") {
+			return [2]string{}, errors.New("project selection cancelled; no new profile was saved")
+		}
+		number, err := strconv.Atoi(answer)
+		if err == nil && number >= 1 && number <= len(choices) {
+			return choices[number-1], nil
+		}
+		fmt.Fprintln(output, "Enter a number from the list, or q to cancel.")
 	}
 }
 
@@ -128,6 +326,7 @@ func cmdHumanWhoAmI(args []string) {
 		return
 	}
 	fmt.Printf("%s (%s)\n", session.User.Email, session.User.DisplayName)
+	printHumanProjectStatus(os.Stdout, human, *session)
 	for _, organization := range session.Organizations {
 		fmt.Printf("  organization %s · %s\n", organization.Slug, organization.Role)
 		for _, project := range organization.Projects {
