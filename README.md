@@ -166,7 +166,9 @@ person does not grant a runner credential. SSH host configuration is unchanged.
 If the OS keyring is locked or unavailable, login fails without creating a new
 profile. Unlock the keyring and retry. A profile-save failure triggers credential
 rollback; an unused session is revoked on a best-effort basis. If revocation
-fails, the CLI warns you to review sessions in the panel.
+fails, the CLI warns that the session may remain active until expiry and asks
+you to contact your service administrator. Self-service session management is
+not yet available in the panel.
 
 ### Manage connections locally
 

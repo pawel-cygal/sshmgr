@@ -144,7 +144,7 @@ func revokeFailedHumanLogin(human humanContext, token string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := newHumanClient(human, token, 10*time.Second).Logout(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "Warning: could not revoke the unused session; review sessions in the WebPanel.")
+		fmt.Fprintln(os.Stderr, "Warning: could not confirm revocation of the unused session. It may remain active until expiry; contact your service administrator.")
 	}
 }
 
